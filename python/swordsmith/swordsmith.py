@@ -301,16 +301,19 @@ class Wordlist:
     
     def get_matches(self, pattern):
         if pattern in self.pattern_matches:
-            return self.pattern_matches[pattern]
-        
+            return set(self.pattern_matches[pattern])
+
         length = len(pattern)
         indices = [self.indices[length][i][letter] for i, letter in enumerate(pattern) if letter != EMPTY]
         if indices:
             matches = set.intersection(*indices)
         else:
-            matches = self.lengths[length]
+            matches = set(self.lengths[length])
 
-        return matches
+        matches = set(matches)
+        self.pattern_matches[pattern] = frozenset(matches)
+
+        return set(self.pattern_matches[pattern])
 
 
 class Filler(ABC):
