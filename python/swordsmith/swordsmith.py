@@ -372,17 +372,23 @@ class Filler(ABC):
     def fewest_matches(crossword, wordlist):
         """Finds the slot that has the fewest possible matches, this is probably the best next place to look."""
         fewest_matches_slot = None
-        fewest_matches = len(wordlist.words) + 1
+        fewest_matches_collection = None
+        fewest_matches_count = len(wordlist.words) + 1
 
         for slot in crossword.words:
             word = crossword.words[slot]
             if Crossword.is_word_filled(word):
                 continue
-            matches = len(wordlist.get_matches(word))
-            if matches < fewest_matches:
-                fewest_matches = matches
+            matches = wordlist.get_matches(word)
+            match_count = len(matches)
+            if match_count < fewest_matches_count:
+                fewest_matches_count = match_count
                 fewest_matches_slot = slot
-        return fewest_matches_slot, fewest_matches
+                fewest_matches_collection = matches
+        if fewest_matches_collection is None:
+            fewest_matches_collection = ()
+
+        return fewest_matches_slot, fewest_matches_collection
     
     @staticmethod
     def minlook(crossword, wordlist, slot, matches, k):
@@ -433,18 +439,19 @@ class DFSFiller(Filler):
             return True
 
         # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
 
         # if some slot has zero matches, fail
         if num_matches == 0:
             return False
-        
+
         # iterate through all possible matches in the fewest-match slot
         previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
+        matches = list(matches)
 
         # randomly shuffle matches
-        matches = list(matches)
         shuffle(matches)
 
         for match in matches:
@@ -481,18 +488,19 @@ class DFSBackjumpFiller(Filler):
             return True, None
 
         # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
 
         # if some slot has zero matches, fail
         if num_matches == 0:
             return False, slot
-        
+
         # iterate through all possible matches in the fewest-match slot
         previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
+        matches = list(matches)
 
         # randomly shuffle matches
-        matches = list(matches)
         shuffle(matches)
         
         for match in matches:
@@ -534,18 +542,19 @@ class MinlookFiller(Filler):
             return True
 
         # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
 
         # if some slot has zero matches, fail
         if num_matches == 0:
             return False
-        
+
         # iterate through all possible matches in the fewest-match slot
         previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
+        matches = list(matches)
 
         # randomly shuffle matches
-        matches = list(matches)
         shuffle(matches)
 
         while matches:
@@ -596,18 +605,19 @@ class MinlookBackjumpFiller(Filler):
             return True, None
 
         # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
 
         # if some slot has zero matches, fail
         if num_matches == 0:
             return False, slot
-        
+
         # iterate through all possible matches in the fewest-match slot
         previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
+        matches = list(matches)
 
         # randomly shuffle matches
-        matches = list(matches)
         shuffle(matches)
 
         while matches:

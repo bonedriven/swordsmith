@@ -1,13 +1,17 @@
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.append('../swordsmith')
+
+TEST_DIR = Path(__file__).resolve().parent
+SWORDSMITH_DIR = (TEST_DIR / ".." / "swordsmith").resolve()
+sys.path.append(str(SWORDSMITH_DIR))
 
 import swordsmith as sw
 
-GRID_5x = '../swordsmith/grid/5x.txt'
-GRID_15x = '../swordsmith/grid/15xcommon.txt'
-WORDLIST = '../swordsmith/wordlist/spreadthewordlist.dict'
+GRID_5x = SWORDSMITH_DIR / "grid" / "5x.txt"
+GRID_15x = SWORDSMITH_DIR / "grid" / "15xcommon.txt"
+WORDLIST = SWORDSMITH_DIR / "wordlist" / "spreadthewordlist.dict"
 
 class Test5xDFS(unittest.TestCase):
     def runTest(self):
@@ -89,4 +93,5 @@ class Test15xMinlookBackjump(unittest.TestCase):
         filler.fill(crossword, wordlist, animate=False)
         self.assertTrue(crossword.is_filled())
 
-unittest.main()
+if __name__ == "__main__":
+    unittest.main()
