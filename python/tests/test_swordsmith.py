@@ -89,4 +89,30 @@ class Test15xMinlookBackjump(unittest.TestCase):
         filler.fill(crossword, wordlist, animate=False)
         self.assertTrue(crossword.is_filled())
 
+class TestQuadStackTemplate(unittest.TestCase):
+    def runTest(self):
+        stack_rows = 4
+        grid = sw.read_grid(GRID_15x)
+        quad_grid = sw.apply_quadruple_stack(grid, stack_rows=stack_rows)
+        crossword = sw.AmericanCrossword.from_grid(quad_grid)
+
+        rows = len(quad_grid)
+        start_row = rows // 2 - stack_rows // 2
+        target_rows = set(range(start_row, start_row + stack_rows))
+
+        across_slots = [
+            slot for slot in crossword.slots
+            if sw.AmericanCrossword.is_across_slot(slot) and slot[0][0] in target_rows
+        ]
+
+        self.assertEqual(len(target_rows), len({slot[0][0] for slot in across_slots}))
+        self.assertTrue(all(len(slot) == crossword.cols for slot in across_slots))
+
+        down_slots = [
+            slot for slot in crossword.slots
+            if sw.AmericanCrossword.is_down_slot(slot)
+        ]
+
+        self.assertTrue(all(len(slot) > 1 for slot in down_slots))
+
 unittest.main()

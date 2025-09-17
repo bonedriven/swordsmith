@@ -646,6 +646,36 @@ GRID_FOLDER = 'grid/'
 GRID_SUFFIX = '.txt'
 
 
+def apply_quadruple_stack(grid, stack_rows=4):
+    """Open the central stack of rows in a 15x15 grid for a quad-stack puzzle."""
+
+    rows = len(grid)
+    if rows != 15 or any(len(row) != 15 for row in grid):
+        raise ValueError('Quadruple stack transformation requires a 15x15 grid')
+
+    if stack_rows <= 0 or stack_rows > rows:
+        raise ValueError('Invalid number of stack rows requested')
+
+    cols = len(grid[0])
+    start_row = rows // 2 - stack_rows // 2
+    end_row = start_row + stack_rows
+
+    if start_row < 0 or end_row > rows:
+        raise ValueError('Stack rows extend beyond the grid bounds')
+
+    transformed = [list(row) for row in grid]
+
+    for r in range(start_row, end_row):
+        for c in range(cols):
+            transformed[r][c] = EMPTY
+
+            mirror_r = rows - 1 - r
+            mirror_c = cols - 1 - c
+            transformed[mirror_r][mirror_c] = EMPTY
+
+    return [''.join(row) for row in transformed]
+
+
 def read_grid(filepath):
     return open(filepath).read().splitlines()
 
@@ -688,12 +718,15 @@ def run_test(args):
     grid_path_prefix = os.path.join(dirname, GRID_FOLDER)
 
     wordlist = read_wordlist(wordlist_path_prefix + args.wordlist_path)
-    
+
     grid_path = grid_path_prefix + args.grid_path
     if not grid_path.endswith(GRID_SUFFIX):
         grid_path = grid_path + GRID_SUFFIX
-    
+
     grid = read_grid(grid_path)
+
+    if args.quadstack:
+        grid = apply_quadruple_stack(grid)
     times = []
 
     for _ in range(args.num_trials):
@@ -731,8 +764,10 @@ def main():
                         default='dfs', help='which algorithm to run: dfs, dfsb, minlook, mlb')
     parser.add_argument('-k', '--k', dest='k', type=int,
                         default=5, help='k constant for minlook')
+    parser.add_argument('--quadstack', dest='quadstack', action='store_true',
+                        help='open the central quad-stack before filling')
     args = parser.parse_args()
-    
+
     run_test(args)
 
 
