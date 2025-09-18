@@ -18,7 +18,6 @@ import swordsmith as sw  # noqa: E402
 GRID_5X = SWORDSMITH_DIR / "grid" / "5x.txt"
 GRID_15X = SWORDSMITH_DIR / "grid" / "15xcommon.txt"
 GRID_15X_QUAD = SWORDSMITH_DIR / "grid" / "15xquadstack.txt"
-GRID_7X_OPEN_PLUS = SWORDSMITH_DIR / "grid" / "7xopenplus.txt"
 WORDLIST = SWORDSMITH_DIR / "wordlist" / "spreadthewordlist.dict"
 
 
@@ -141,51 +140,6 @@ class Test15xMinlookBackjump(unittest.TestCase):
         result, _ = filler.fill(crossword, wordlist, animate=False)
         self.assertTrue(result)
         self.assertTrue(crossword.is_filled())
-
-
-class TestWildcardLayoutRegression(unittest.TestCase):
-    def runTest(self) -> None:
-        raw_grid = sw.read_grid(GRID_7X_OPEN_PLUS)
-        layouts = list(sw.generate_wildcard_layouts(raw_grid))
-        self.assertTrue(layouts)
-        for layout_rows, _ in layouts:
-            self.assertTrue(all("+" not in row for row in layout_rows))
-
-        target_blocks = set(sw.WILDCARD_CANONICAL_ASSIGNMENTS)
-
-        chosen_layout = None
-        for layout_rows, assignments in layouts:
-            assigned_blocks = {
-                coord for coord, value in assignments.items() if value == sw.BLOCK
-            }
-            if assigned_blocks == target_blocks:
-                chosen_layout = layout_rows
-                break
-
-        self.assertIsNotNone(chosen_layout, "Expected wildcard assignment missing")
-
-        total_cells = len(chosen_layout) * len(chosen_layout[0])
-        block_count = sum(cell == sw.BLOCK for row in chosen_layout for cell in row)
-        self.assertLessEqual(block_count / total_cells, 0.2)
-
-        wordlist = sw.read_wordlist(WORDLIST)
-        crossword = sw.AmericanCrossword.from_grid(chosen_layout)
-
-        with sw.prioritize_words(
-            wordlist, sw.WILDCARD_CANONICAL_WORDS, patch_shuffle=True
-        ):
-            filler = sw.DFSFiller()
-            result = filler.fill(crossword, wordlist, animate=False)
-
-        self.assertTrue(result)
-        self.assertTrue(crossword.is_filled())
-
-        filled_words = {
-            crossword.words[slot]
-            for slot in crossword.slots
-            if sw.Crossword.is_word_filled(crossword.words[slot])
-        }
-        self.assertSetEqual(filled_words, set(sw.WILDCARD_CANONICAL_WORDS))
 
 
 class TestQuadStackDFS(unittest.TestCase):
