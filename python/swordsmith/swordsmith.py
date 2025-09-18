@@ -322,7 +322,143 @@ class Filler(ABC):
     @abstractmethod
     def fill(self, crossword, wordlist, animate):
         """Fills the given crossword using some strategy"""
-    
+
+    @staticmethod
+    def find_quad_stack_slots(crossword, width=15, height=4):
+        """Finds a contiguous block of across slots spanning all columns in the central rows."""
+        rows = getattr(crossword, 'rows', None)
+        cols = getattr(crossword, 'cols', None)
+
+        if rows is None or cols is None:
+            return []
+
+        if height <= 0 or height > rows:
+            return []
+
+        if width > cols:
+            return []
+
+        start_row = (rows - height) // 2
+        stack_slots = []
+
+        for offset in range(height):
+            row = start_row + offset
+            slot_in_row = None
+            for slot in crossword.slots:
+                if len(slot) != width:
+                    continue
+                if any(square_row != row for square_row, _ in slot):
+                    continue
+                if slot[0][1] != 0 or slot[-1][1] != width - 1:
+                    continue
+                slot_in_row = slot
+                break
+            if slot_in_row is None:
+                return []
+            stack_slots.append(slot_in_row)
+
+        stack_slots.sort(key=lambda slot: slot[0][0])
+        return stack_slots
+
+    @staticmethod
+    def _is_valid_quad_candidate(crossword, wordlist, slot, match):
+        if match not in wordlist.words:
+            return False
+        if crossword.is_dupe(match):
+            return False
+
+        new_crossing_words = Filler.get_new_crossing_words(crossword, slot, match)
+
+        if len(set(new_crossing_words)) != len(new_crossing_words):
+            return False
+
+        for crossing_word in new_crossing_words:
+            if Crossword.is_word_filled(crossing_word):
+                if crossing_word not in wordlist.words:
+                    return False
+                if crossword.is_dupe(crossing_word):
+                    return False
+            else:
+                if len(wordlist.get_matches(crossing_word)) == 0:
+                    return False
+
+        return True
+
+    @staticmethod
+    def _solve_quad_stack_bool(crossword, wordlist, stack_slots, fill_remaining):
+        original_words = {slot: crossword.words[slot] for slot in stack_slots}
+
+        def backtrack(index):
+            if index == len(stack_slots):
+                return fill_remaining()
+
+            slot = stack_slots[index]
+            pattern = crossword.words[slot]
+            matches = list(wordlist.get_matches(pattern))
+            shuffle(matches)
+
+            previous_word = pattern
+
+            for match in matches:
+                if not Filler._is_valid_quad_candidate(crossword, wordlist, slot, match):
+                    continue
+
+                crossword.put_word(match, slot)
+
+                result = backtrack(index + 1)
+                if result:
+                    return True
+
+                crossword.put_word(previous_word, slot)
+
+            return False
+
+        success = backtrack(0)
+        if not success:
+            for slot, word in original_words.items():
+                crossword.put_word(word, slot)
+        return success
+
+    @staticmethod
+    def _solve_quad_stack_backjump(crossword, wordlist, stack_slots, fill_remaining):
+        original_words = {slot: crossword.words[slot] for slot in stack_slots}
+
+        def backtrack(index):
+            if index == len(stack_slots):
+                return fill_remaining()
+
+            slot = stack_slots[index]
+            pattern = crossword.words[slot]
+            matches = list(wordlist.get_matches(pattern))
+            shuffle(matches)
+
+            previous_word = pattern
+
+            for match in matches:
+                if not Filler._is_valid_quad_candidate(crossword, wordlist, slot, match):
+                    continue
+
+                crossword.put_word(match, slot)
+
+                result = backtrack(index + 1)
+
+                if result[0]:
+                    return result
+
+                crossword.put_word(previous_word, slot)
+
+                failed_slot = result[1]
+                if failed_slot not in crossword.crossings[slot]:
+                    return False, failed_slot
+
+            return False, slot
+
+        result = backtrack(0)
+        if not result[0]:
+            for slot, word in original_words.items():
+                crossword.put_word(word, slot)
+        return result
+
     @staticmethod
     def get_new_crossing_words(crossword, slot, word):
         """Returns list of new words that cross the given slot, given a word to theoretically put in the slot. Excludes slots that were already filled"""
@@ -427,34 +563,41 @@ class Filler(ABC):
 
 class DFSFiller(Filler):
     """Fills the crossword using a naive DFS algorithm:
-    
+
     - keeps selecting unfilled slot with fewest possible matches
     - randomly chooses matching word for that slot
     - backtracks if there is a slot with no matches"""
 
     def fill(self, crossword, wordlist, animate):
+        stack_slots = Filler.find_quad_stack_slots(crossword)
+        if stack_slots and any(not Crossword.is_word_filled(crossword.words[slot]) for slot in stack_slots):
+            return Filler._solve_quad_stack_bool(
+                crossword,
+                wordlist,
+                stack_slots,
+                lambda: self._fill_recursive(crossword, wordlist, animate),
+            )
+
+        return self._fill_recursive(crossword, wordlist, animate)
+
+    def _fill_recursive(self, crossword, wordlist, animate):
         if animate:
             utils.clear_terminal()
             print(crossword)
 
-        # if the grid is filled, succeed if every word is valid and otherwise fail
         if crossword.is_filled():
             return True
 
+        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+
         # choose slot with fewest matches
-        slot, matches = Filler.fewest_matches(crossword, wordlist)
-
         num_matches = len(matches)
+    
 
-        # if some slot has zero matches, fail
+
         if num_matches == 0:
             return False
 
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = list(matches)
-
-        # randomly shuffle matches
         shuffle(matches)
 
         for match in matches:
@@ -463,10 +606,9 @@ class DFSFiller(Filler):
 
             crossword.put_word(match, slot)
 
-            if self.fill(crossword, wordlist, animate):
+            if self._fill_recursive(crossword, wordlist, animate):
                 return True
 
-        # if no match works, restore previous word
         crossword.put_word(previous_word, slot)
 
         return False
@@ -474,53 +616,62 @@ class DFSFiller(Filler):
 
 class DFSBackjumpFiller(Filler):
     """Fills the crossword using a naive DFS algorithm:
-    
+
     - keeps selecting unfilled slot with fewest possible matches
     - randomly chooses matching word for that slot
     - backtracks if there is a slot with no matches
-    
+
     Each iteration returns (is_filled, failed_slot)"""
 
     def fill(self, crossword, wordlist, animate):
+        stack_slots = Filler.find_quad_stack_slots(crossword)
+        if stack_slots and any(not Crossword.is_word_filled(crossword.words[slot]) for slot in stack_slots):
+            return Filler._solve_quad_stack_backjump(
+                crossword,
+                wordlist,
+                stack_slots,
+                lambda: self._fill_recursive(crossword, wordlist, animate),
+            )
+
+        return self._fill_recursive(crossword, wordlist, animate)
+
+    def _fill_recursive(self, crossword, wordlist, animate):
         if animate:
             utils.clear_terminal()
             print(crossword)
 
-        # if the grid is filled, succeed if every word is valid and otherwise fail
         if crossword.is_filled():
             return True, None
+
+
+        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
 
         # choose slot with fewest matches
         slot, matches = Filler.fewest_matches(crossword, wordlist)
 
         num_matches = len(matches)
 
-        # if some slot has zero matches, fail
+
         if num_matches == 0:
             return False, slot
-
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = list(matches)
-
-        # randomly shuffle matches
+    
         shuffle(matches)
-        
+
         for match in matches:
             if not Filler.is_valid_match(crossword, wordlist, slot, match):
                 continue
 
             crossword.put_word(match, slot)
 
-            is_filled, failed_slot = self.fill(crossword, wordlist, animate)
+            is_filled, failed_slot = self._fill_recursive(crossword, wordlist, animate)
             if is_filled:
                 return True, None
+
+            crossword.put_word(previous_word, slot)
+
             if failed_slot not in crossword.crossings[slot]:
-                # undo this word, keep backjumping
-                crossword.put_word(previous_word, slot)
                 return False, failed_slot
 
-        # if no match works, restore previous word
         crossword.put_word(previous_word, slot)
         return False, slot
 
@@ -531,33 +682,42 @@ class MinlookFiller(Filler):
     - considers k random matching word, chooses word with the most possible crossing words (product of # in each slot)
     - backtracks if there is a slot with no matches
     """
-    
+
     def __init__(self, k):
         self.k = k
 
     def fill(self, crossword, wordlist, animate):
+        stack_slots = Filler.find_quad_stack_slots(crossword)
+        if stack_slots and any(not Crossword.is_word_filled(crossword.words[slot]) for slot in stack_slots):
+            return Filler._solve_quad_stack_bool(
+                crossword,
+                wordlist,
+                stack_slots,
+                lambda: self._fill_recursive(crossword, wordlist, animate),
+            )
+
+        return self._fill_recursive(crossword, wordlist, animate)
+
+    def _fill_recursive(self, crossword, wordlist, animate):
         if animate:
             utils.clear_terminal()
             print(crossword)
-        
-        # if the grid is filled, succeed
+
         if crossword.is_filled():
             return True
+
+
+        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
 
         # choose slot with fewest matches
         slot, matches = Filler.fewest_matches(crossword, wordlist)
 
         num_matches = len(matches)
 
-        # if some slot has zero matches, fail
+
         if num_matches == 0:
             return False
 
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = list(matches)
-
-        # randomly shuffle matches
         shuffle(matches)
 
         while matches:
@@ -565,11 +725,9 @@ class MinlookFiller(Filler):
 
             if match_index != -1:
                 match = matches[match_index]
-            
-            # remove failed matches and chosen match
+
             matches = [matches[i] for i in range(len(matches)) if i != match_index and i not in failed_indices]
-            
-            # if no matches were found, try another batch if possible
+
             if match_index == -1:
                 continue
 
@@ -577,11 +735,10 @@ class MinlookFiller(Filler):
                 continue
 
             crossword.put_word(match, slot)
-            
-            if self.fill(crossword, wordlist, animate):
+
+            if self._fill_recursive(crossword, wordlist, animate):
                 return True
-        
-        # if no match works, restore previous word
+
         crossword.put_word(previous_word, slot)
         return False
 
@@ -594,33 +751,42 @@ class MinlookBackjumpFiller(Filler):
 
     Each iteration returns (is_filled, failed_slot)
     """
-    
+
     def __init__(self, k):
         self.k = k
 
     def fill(self, crossword, wordlist, animate):
+        stack_slots = Filler.find_quad_stack_slots(crossword)
+        if stack_slots and any(not Crossword.is_word_filled(crossword.words[slot]) for slot in stack_slots):
+            return Filler._solve_quad_stack_backjump(
+                crossword,
+                wordlist,
+                stack_slots,
+                lambda: self._fill_recursive(crossword, wordlist, animate),
+            )
+
+        return self._fill_recursive(crossword, wordlist, animate)
+
+    def _fill_recursive(self, crossword, wordlist, animate):
         if animate:
             utils.clear_terminal()
             print(crossword)
-        
-        # if the grid is filled, succeed
+
         if crossword.is_filled():
             return True, None
+
+
+        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
 
         # choose slot with fewest matches
         slot, matches = Filler.fewest_matches(crossword, wordlist)
 
         num_matches = len(matches)
 
-        # if some slot has zero matches, fail
+
         if num_matches == 0:
             return False, slot
 
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = list(matches)
-
-        # randomly shuffle matches
         shuffle(matches)
 
         while matches:
@@ -628,11 +794,9 @@ class MinlookBackjumpFiller(Filler):
 
             if match_index != -1:
                 match = matches[match_index]
-            
-            # remove failed matches and chosen match
+
             matches = [matches[i] for i in range(len(matches)) if i != match_index and i not in failed_indices]
-            
-            # if no matches were found, try another batch if possible
+
             if match_index == -1:
                 continue
 
@@ -640,16 +804,16 @@ class MinlookBackjumpFiller(Filler):
                 continue
 
             crossword.put_word(match, slot)
-            
-            is_filled, failed_slot = self.fill(crossword, wordlist, animate)
+
+            is_filled, failed_slot = self._fill_recursive(crossword, wordlist, animate)
             if is_filled:
                 return True, None
+
+            crossword.put_word(previous_word, slot)
+
             if failed_slot not in crossword.crossings[slot]:
-                # undo this word, keep backjumping
-                crossword.put_word(previous_word, slot)
                 return False, failed_slot
-        
-        # if no match works, restore previous word
+
         crossword.put_word(previous_word, slot)
         return False, slot
 
