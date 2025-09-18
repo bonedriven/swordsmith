@@ -26,34 +26,6 @@ else:
 EMPTY: str = "."
 BLOCK: str = " "
 
-WILDCARD_DEFAULT_WORDS: Tuple[str, ...] = (
-    "ABC",
-    "DEFGHIJ",
-    "KLMNOPQ",
-    "RSTUVWX",
-    "YZABCDE",
-    "FGHIJKL",
-    "MNO",
-    "AFMTAHM",
-    "BGNUBIN",
-    "CHOVCJO",
-    "DKRYF",
-    "ELSZG",
-    "IPWDK",
-    "JQXEL",
-)
-
-WILDCARD_DEFAULT_BLOCKS: Tuple[Square, ...] = (
-    (0, 0),
-    (0, 1),
-    (0, 5),
-    (0, 6),
-    (6, 0),
-    (6, 1),
-    (6, 5),
-    (6, 6),
-)
-
 Square = Tuple[int, int]
 Slot = Tuple[Square, ...]
 WordMatches = List[str]
@@ -195,8 +167,7 @@ class AmericanCrossword(Crossword):
         crossword = cls(len(rows), cols)
         for r, row in enumerate(rows):
             for c, value in enumerate(row):
-                cell_value = EMPTY if value == "+" else value
-                crossword.grid[r][c] = cell_value
+                crossword.grid[r][c] = value
         crossword._generate_slots_from_grid(all_checked=all_checked)
         return crossword
 
@@ -1182,121 +1153,6 @@ GRID_FOLDER = "grid"
 GRID_SUFFIX = ".txt"
 
 
-def generate_wildcard_layouts(
-    grid_rows: Iterable[str],
-) -> Iterator[Tuple[Tuple[str, ...], Dict[Square, str]]]:
-    """Yield sanitized grid layouts for every wildcard assignment.
-
-    The returned ``assignments`` mapping only contains coordinates promoted to
-    :data:`BLOCK`; wildcards left white are omitted because the sanitized rows
-    already reflect their :data:`EMPTY` state.
-    """
-
-    rows = tuple(
-        row if isinstance(row, str) else "".join(str(char) for char in row)
-        for row in grid_rows
-    )
-    if not rows:
-        yield tuple(), {}
-        return
-
-    working_grid = [list(row) for row in rows]
-    cols = len(working_grid[0])
-    if any(len(row) != cols for row in working_grid):
-        raise ValueError("all grid rows must have the same length")
-
-    rows_count = len(working_grid)
-    wildcard_pairs: List[Tuple[Square, Square]] = []
-    seen: set[Square] = set()
-
-    for r in range(rows_count):
-        for c in range(cols):
-            if working_grid[r][c] != "+" or (r, c) in seen:
-                continue
-            counterpart = (rows_count - 1 - r, cols - 1 - c)
-            counter_value = working_grid[counterpart[0]][counterpart[1]]
-            if counter_value != "+":
-                raise ValueError(
-                    f"wildcard at {(r, c)} must be paired with '+' at {counterpart}"
-                )
-            seen.add((r, c))
-            seen.add(counterpart)
-            wildcard_pairs.append(((r, c), counterpart))
-
-    max_blocks = math.floor(0.2 * rows_count * cols)
-    existing_blocks = sum(
-        1 for row in working_grid for cell in row if cell == BLOCK
-    )
-    assignments: Dict[Square, str] = {}
-
-    def backtrack(index: int, block_count: int) -> Iterator[Tuple[Tuple[str, ...], Dict[Square, str]]]:
-        if index == len(wildcard_pairs):
-            sanitized_rows = tuple(
-                "".join(EMPTY if cell == "+" else cell for cell in row)
-                for row in working_grid
-            )
-            yield sanitized_rows, dict(assignments)
-            return
-
-        first, second = wildcard_pairs[index]
-        coord_list: List[Square] = [first]
-        if second != first:
-            coord_list.append(second)
-
-        replaced: List[Tuple[Square, str]] = []
-        for coord in coord_list:
-            r, c = coord
-            replaced.append((coord, working_grid[r][c]))
-            working_grid[r][c] = EMPTY
-        yield from backtrack(index + 1, block_count)
-        for coord, original in replaced:
-            r, c = coord
-            working_grid[r][c] = original
-
-        block_increment = len(coord_list)
-        if block_count + block_increment <= max_blocks:
-            block_replaced: List[Tuple[Square, str]] = []
-            for coord in coord_list:
-                r, c = coord
-                block_replaced.append((coord, working_grid[r][c]))
-                working_grid[r][c] = BLOCK
-                assignments[coord] = BLOCK
-            yield from backtrack(index + 1, block_count + block_increment)
-            for coord, original in block_replaced:
-                r, c = coord
-                working_grid[r][c] = original
-                assignments.pop(coord, None)
-
-    if not wildcard_pairs:
-        sanitized_rows = tuple(
-            "".join(EMPTY if cell == "+" else cell for cell in row)
-            for row in working_grid
-        )
-        yield sanitized_rows, {}
-        return
-
-    yield from backtrack(0, existing_blocks)
-
-
-def _format_wildcard_assignment(assignments: Dict[Square, str]) -> str:
-    parts: List[str] = []
-    for coord in sorted(assignments):
-        value = assignments[coord]
-        state = "BLOCK" if value == BLOCK else "EMPTY"
-        parts.append(f"{coord}: {state}")
-    return "{" + ", ".join(parts) + "}"
-
-
-def _format_wildcard_assignment_list(assignments_list: Sequence[Dict[Square, str]]) -> str:
-    if not assignments_list:
-        return "[]"
-    formatted = (
-        _format_wildcard_assignment(assignments)
-        for assignments in assignments_list
-    )
-    return "[" + ", ".join(formatted) + "]"
-
-
 def read_grid(filepath: Union[str, os.PathLike[str], Iterable[str]]) -> List[str]:
     """Read a grid file and return a list of strings representing rows."""
     if isinstance(filepath, (str, os.PathLike)):
@@ -1376,7 +1232,6 @@ def run_test(args) -> None:
     if getattr(args, "benchmark_open", False):
         benchmark_grid_path = os.path.join(grid_path_prefix, "15xopen.txt")
         benchmark_grid = read_grid(benchmark_grid_path)
-        benchmark_layouts = list(generate_wildcard_layouts(benchmark_grid))
         strategies = ["dfs", "dfsb", "minlook", "mlb", "dlx"]
         print("Running 15xopen benchmarks:\n")
         for strategy in strategies:
@@ -1384,25 +1239,15 @@ def run_test(args) -> None:
             times: List[float] = []
             for _ in range(args.num_trials):
                 tic = time.time()
-                success = False
-                attempted_assignments: List[Dict[Square, str]] = []
-                for layout_rows, assignments in benchmark_layouts:
-                    crossword = AmericanCrossword.from_grid(tuple(layout_rows))
-                    filler = get_filler(benchmark_args)
-                    if filler is None:
-                        raise ValueError(f"unknown strategy: {strategy}")
-                    result = filler.fill(crossword, wordlist, False)
-                    if isinstance(result, tuple):
-                        result = result[0]
-                    if result:
-                        success = True
-                        break
-                    attempted_assignments.append(assignments)
-                if not success:
-                    formatted = _format_wildcard_assignment_list(attempted_assignments)
-                    raise RuntimeError(
-                        f"failed to fill crossword using {strategy}; wildcard assignments tried: {formatted}"
-                    )
+                crossword = AmericanCrossword.from_grid(benchmark_grid)
+                filler = get_filler(benchmark_args)
+                if filler is None:
+                    raise ValueError(f"unknown strategy: {strategy}")
+                result = filler.fill(crossword, wordlist, False)
+                if isinstance(result, tuple):
+                    result = result[0]
+                if not result:
+                    raise RuntimeError(f"failed to fill crossword using {strategy}")
                 times.append(time.time() - tic)
             log_times(times, strategy)
             print()
@@ -1413,98 +1258,31 @@ def run_test(args) -> None:
         grid_path = grid_path + GRID_SUFFIX
 
     grid = read_grid(grid_path)
+    times: List[float] = []
 
-    original_get_matches = None
-    shuffle_reset = None
-    shuffle_overridden = False
-    wildcard_override = False
+    for _ in range(args.num_trials):
+        tic = time.time()
 
-    if os.path.basename(grid_path) == "7xopenplus.txt":
-        for word in WILDCARD_DEFAULT_WORDS:
-            wordlist.add_word(word)
+        crossword = AmericanCrossword.from_grid(grid)
+        filler = get_filler(args)
+        if filler is None:
+            raise ValueError(f"unknown strategy: {args.strategy}")
 
-        prioritized_words = list(WILDCARD_DEFAULT_WORDS)
-        prioritized_set = set(prioritized_words)
-        original_get_matches = wordlist.get_matches
+        result = filler.fill(crossword, wordlist, args.animate)
+        if isinstance(result, tuple):
+            result = result[0]
+        if not result:
+            raise RuntimeError("failed to fill crossword")
 
-        def prioritized_get_matches(self: "Wordlist", pattern: str) -> list[str]:
-            matches = original_get_matches(pattern)
-            if not matches:
-                return matches
-            priority = [word for word in prioritized_words if word in matches]
-            if not priority:
-                return matches
-            remainder = [word for word in matches if word not in prioritized_set]
-            return priority + remainder
+        duration = time.time() - tic
+        times.append(duration)
 
-        wordlist.get_matches = prioritized_get_matches.__get__(wordlist, Wordlist)
+        if not args.animate:
+            print(crossword)
 
-        global shuffle
+        print(f"\nFilled {crossword.cols}x{crossword.rows} crossword in {duration:.4f} seconds\n")
 
-        shuffle_reset = shuffle
-
-        def deterministic_shuffle(sequence, random=None):
-            return None
-
-        shuffle = deterministic_shuffle
-        shuffle_overridden = True
-        wildcard_override = True
-
-    try:
-        layouts = list(generate_wildcard_layouts(grid))
-        if wildcard_override:
-            target_blocks = set(WILDCARD_DEFAULT_BLOCKS)
-            for index, (_, assignments) in enumerate(layouts):
-                assigned_blocks = {
-                    coord for coord, value in assignments.items() if value == BLOCK
-                }
-                if assigned_blocks == target_blocks:
-                    if index != 0:
-                        layouts[0], layouts[index] = layouts[index], layouts[0]
-                    break
-        times: List[float] = []
-
-        for _ in range(args.num_trials):
-            tic = time.time()
-
-            successful_crossword: Optional[AmericanCrossword] = None
-            attempted_assignments: List[Dict[Square, str]] = []
-            for layout_rows, assignments in layouts:
-                crossword = AmericanCrossword.from_grid(tuple(layout_rows))
-                filler = get_filler(args)
-                if filler is None:
-                    raise ValueError(f"unknown strategy: {args.strategy}")
-
-                result = filler.fill(crossword, wordlist, args.animate)
-                if isinstance(result, tuple):
-                    result = result[0]
-                if result:
-                    successful_crossword = crossword
-                    break
-                attempted_assignments.append(assignments)
-
-            if successful_crossword is None:
-                formatted = _format_wildcard_assignment_list(attempted_assignments)
-                raise RuntimeError(
-                    f"failed to fill crossword; wildcard assignments tried: {formatted}"
-                )
-
-            duration = time.time() - tic
-            times.append(duration)
-
-            if not args.animate:
-                print(successful_crossword)
-
-            print(
-                f"\nFilled {successful_crossword.cols}x{successful_crossword.rows} crossword in {duration:.4f} seconds\n"
-            )
-
-        log_times(times, args.strategy)
-    finally:
-        if original_get_matches is not None:
-            wordlist.get_matches = original_get_matches
-        if shuffle_overridden and shuffle_reset is not None:
-            shuffle = shuffle_reset
+    log_times(times, args.strategy)
 
 
 def main() -> None:
@@ -1572,8 +1350,6 @@ def main() -> None:
 __all__ = [
     "EMPTY",
     "BLOCK",
-    "WILDCARD_DEFAULT_WORDS",
-    "WILDCARD_DEFAULT_BLOCKS",
     "Crossword",
     "AmericanCrossword",
     "Wordlist",
@@ -1583,7 +1359,6 @@ __all__ = [
     "MinlookFiller",
     "MinlookBackjumpFiller",
     "DLXFiller",
-    "generate_wildcard_layouts",
     "read_grid",
     "read_wordlist",
     "log_times",
