@@ -37,8 +37,8 @@ class Crossword:
             for slot in self.squares[square]:
                 for crossing_slot in self.squares[square]:
                     if slot != crossing_slot:
-                        if crossings_tuple := self.crossings[slot][crossing_slot]:
-                            self.crossings[slot][crossing_slot] = (*crossings_tuple, square)
+                        if self.crossings[slot][crossing_slot]:
+                            self.crossings[slot][crossing_slot] = (*self.crossings[slot][crossing_slot], square)
                         else:
                             self.crossings[slot][crossing_slot] = (square,)
 
@@ -72,7 +72,7 @@ class Crossword:
         
         # place word in words map and wordset
         self.words[slot] = word
-        if self.is_word_filled(prev_word):
+        if self.is_word_filled(prev_word) and prev_word in self.wordset:
             self.wordset.remove(prev_word)
         if self.is_word_filled(word):
             self.wordset.add(word)
@@ -82,7 +82,6 @@ class Crossword:
             for square in self.crossings[slot][crossing_slot]:
                 index = self.squares[square][slot]
                 crossing_index = self.squares[square][crossing_slot]
-
                 self.__put_letter_in_slot(word[index], crossing_slot, crossing_index)
 
     def is_dupe(self, word):
@@ -110,43 +109,97 @@ class Crossword:
 
 
 class AmericanCrossword(Crossword):
-    def __init__(self, rows, cols, min_word_length: int = 3):
+    def __init__(self, rows, cols, *, min_word_length: int = 3, require_rotational_symmetry: bool = True):
         super(AmericanCrossword, self).__init__()
 
         self.rows = rows
         self.cols = cols
-        self.min_word_length = max(1, min_word_length)
-        self.grid = [[EMPTY for c in range(cols)] for r in range(rows)] # 2D array of squares
+        self.min_word_length = max(1, int(min_word_length))
+        self.require_rotational_symmetry = bool(require_rotational_symmetry)
+        self.grid = [[EMPTY for _ in range(cols)] for _ in range(rows)] # 2D array of squares
 
         self.__generate_slots_from_grid()
 
+    def _rotational_partner(self, row, col):
+        """Return the 180° rotationally symmetric coordinate for the given cell."""
+        return self.rows - 1 - row, self.cols - 1 - col
+
+    def _set_block_pair(self, row, col):
+        """Place a block at the given coordinate and any required rotational partner."""
+        partner_row, partner_col = self._rotational_partner(row, col)
+
+        coords = {(row, col)}
+        if self.require_rotational_symmetry:
+            coords.add((partner_row, partner_col))
+
+        # validate we’re not overwriting letters
+        for target_row, target_col in coords:
+            value = self.grid[target_row][target_col]
+            if value not in (EMPTY, BLOCK):
+                raise ValueError(
+                    "Cannot place block at "
+                    f"{(row, col)}; letter '{value}' already present at "
+                    f"{(target_row, target_col)}."
+                )
+
+        # place blocks
+        for target_row, target_col in coords:
+            self.grid[target_row][target_col] = BLOCK
+
     @classmethod
-    def from_grid(cls, grid, min_word_length: int = 3, all_checked=False):
+    def from_grid(cls, grid, *, min_word_length: int = 3, all_checked: bool = True, require_rotational_symmetry: bool = True):
         """Generates AmericanCrossword from 2D array of characters"""
         grid = [row for row in grid if len(row) > 0]
         if not grid:
-            raise ValueError('Grid must contain at least one row')
-
+            raise ValueError('Grid must contain at least one non-empty row.')
         rows = len(grid)
         cols = len(grid[0])
         if any(len(row) != cols for row in grid):
             raise ValueError('All rows in the grid must have the same length')
 
-        blocks = []
-
+        blocks = set()
         for r in range(rows):
             for c in range(cols):
                 if grid[r][c] == BLOCK:
-                    blocks.append((r, c))
+                    blocks.add((r, c))
 
-        xw = cls(rows, cols, min_word_length=min_word_length)
+        if require_rotational_symmetry:
+            for row, col in blocks:
+                partner = (rows - 1 - row, cols - 1 - col)
+                if partner not in blocks:
+                    raise ValueError(
+                        "Grid violates rotational symmetry: block at "
+                        f"{(row, col)} lacks partner at {partner}."
+                    )
+
+        xw = cls(rows, cols, min_word_length=min_word_length, require_rotational_symmetry=require_rotational_symmetry)
         if blocks:
             xw.put_blocks(blocks)
 
+        # copy letters, validating against symmetry conflicts
         for r in range(rows):
             for c in range(cols):
                 if grid[r][c] != BLOCK and grid[r][c] != EMPTY:
+                    if require_rotational_symmetry and xw.grid[r][c] == BLOCK:
+                        partner = xw._rotational_partner(r, c)
+                        raise ValueError(
+                            "Grid violates rotational symmetry: letter "
+                            f"'{grid[r][c]}' at {(r, c)} conflicts with block at "
+                            f"{partner}."
+                        )
                     xw.grid[r][c] = grid[r][c]
+
+        if require_rotational_symmetry:
+            for r in range(rows):
+                for c in range(cols):
+                    if xw.grid[r][c] != BLOCK and xw.grid[r][c] != EMPTY:
+                        partner_row, partner_col = xw._rotational_partner(r, c)
+                        if xw.grid[partner_row][partner_col] == BLOCK:
+                            raise ValueError(
+                                "Grid violates rotational symmetry after letter copy: "
+                                f"letter '{xw.grid[r][c]}' at {(r, c)} conflicts with block at "
+                                f"{(partner_row, partner_col)}."
+                            )
 
         xw.__generate_slots_from_grid(all_checked)
 
@@ -199,33 +252,40 @@ class AmericanCrossword(Crossword):
     
     def put_block(self, row, col):
         """Places block in certain square"""
-        previous_value = self.grid[row][col]
-        self.grid[row][col] = BLOCK
+        previous_values = {}
+        coords = {(row, col)}
+        if self.require_rotational_symmetry:
+            coords.add(self._rotational_partner(row, col))
         try:
+            for r, c in coords:
+                previous_values[(r, c)] = self.grid[r][c]
+            self._set_block_pair(row, col)
             self.__generate_slots_from_grid()
-        except ValueError as error:
-            self.grid[row][col] = previous_value
+        except Exception as error:
+            # rollback and regenerate cleanly (or clear on failure-to-regenerate)
+            for (r, c), val in previous_values.items():
+                self.grid[r][c] = val
             try:
                 self.__generate_slots_from_grid()
-            except ValueError:
+            except Exception:
                 self.clear()
             raise error
 
     def put_blocks(self, coords):
         """Places list of blocks in specified squares"""
         previous_values = {}
-        for row, col in coords:
-            if (row, col) not in previous_values:
-                previous_values[(row, col)] = self.grid[row][col]
-            self.grid[row][col] = BLOCK
         try:
+            for row, col in coords:
+                if (row, col) not in previous_values:
+                    previous_values[(row, col)] = self.grid[row][col]
+                self._set_block_pair(row, col)
             self.__generate_slots_from_grid()
-        except ValueError as error:
-            for (row, col), value in previous_values.items():
-                self.grid[row][col] = value
+        except Exception as error:
+            for (r, c), val in previous_values.items():
+                self.grid[r][c] = val
             try:
                 self.__generate_slots_from_grid()
-            except ValueError:
+            except Exception:
                 self.clear()
             raise error
     
@@ -241,7 +301,9 @@ class AmericanCrossword(Crossword):
         
         self.words[slot] = word
 
-    def __generate_slots_from_grid(self, all_checked=False):
+    def __generate_slots_from_grid(self, all_checked: bool = False):
+        # When all_checked=True, accept slots of length 1+ regardless of min_word_length;
+        # useful when loading pre-checked grids. Otherwise enforce self.min_word_length.
         min_length = 1 if all_checked else self.min_word_length
         min_length = max(1, min_length)
 
@@ -365,537 +427,4 @@ class Filler(ABC):
     
     @staticmethod
     def get_new_crossing_words(crossword, slot, word):
-        """Returns list of new words that cross the given slot, given a word to theoretically put in the slot. Excludes slots that were already filled"""
-        new_crossing_words = []
-
-        for crossing_slot in crossword.crossings[slot]:
-            new_crossing_word = crossword.words[crossing_slot]
-            for square in crossword.crossings[slot][crossing_slot]:
-                index = crossword.squares[square][slot]
-                letter = word[index]
-
-                crossing_index = crossword.squares[square][crossing_slot]
-                crossing_word = crossword.words[crossing_slot]
-
-                new_crossing_word = new_crossing_word[:crossing_index] + letter + new_crossing_word[crossing_index + 1:]
-
-            if Crossword.is_word_filled(crossing_word) and crossing_word == new_crossing_word:
-                # this word was already there, ignore
-                continue
-
-            new_crossing_words.append(new_crossing_word)
-        
-        return new_crossing_words
-    
-    @staticmethod
-    def is_valid_match(crossword, wordlist, slot, match):
-        """Returns whether the match can be placed in the slot without creating a dupe or invalid word."""
-
-        if match not in wordlist.words:
-            return False # match is invalid word
-        if crossword.is_dupe(match):
-            return False # match is dupe
-        
-        new_crossing_words = Filler.get_new_crossing_words(crossword, slot, match)
-
-        # make sure crossing words are valid
-        for crossing_word in new_crossing_words:
-            if Crossword.is_word_filled(crossing_word) and crossing_word not in wordlist.words:
-                return False # created invalid word
-            if crossword.is_dupe(crossing_word):
-                return False # created dupe
-        
-        # make sure crossing words don't dupe each other
-        if len(set(new_crossing_words)) != len(new_crossing_words):
-            return False
-        
-        return True
-    
-    @staticmethod
-    def fewest_matches(crossword, wordlist):
-        """Finds the slot that has the fewest possible matches, this is probably the best next place to look."""
-        fewest_matches_slot = None
-        fewest_matches = len(wordlist.words) + 1
-
-        for slot in crossword.words:
-            word = crossword.words[slot]
-            if Crossword.is_word_filled(word):
-                continue
-            matches = len(wordlist.get_matches(word))
-            if matches < fewest_matches:
-                fewest_matches = matches
-                fewest_matches_slot = slot
-        return fewest_matches_slot, fewest_matches
-    
-    @staticmethod
-    def minlook(crossword, wordlist, slot, matches, k):
-        """Considers given matches, returns index of the one that offers the most possible crossing words. If there are none, returns -1"""
-        match_indices = range(min(k, len(matches))) # just take first k matches
-        failed_indices = set()
-
-        best_match_index = -1
-        best_cross_product = -1
-
-        for match_index in match_indices:
-            cross_product = 0
-
-            for crossing_word in Filler.get_new_crossing_words(crossword, slot, matches[match_index]):
-                num_matches = len(wordlist.get_matches(crossing_word))
-                
-                # if no matches for some crossing slot, give up and move on
-                # this is basically "arc-consistency lookahead"
-                if num_matches == 0:
-                    failed_indices.add(match_index)
-                    cross_product = float('-inf')
-                    break
-                
-                # use log product to avoid explosions
-                cross_product += math.log(num_matches)
-            
-            if cross_product > best_cross_product:
-                best_match_index = match_index
-                best_cross_product = cross_product
-        
-        return best_match_index, failed_indices
-
-
-class DFSFiller(Filler):
-    """Fills the crossword using a naive DFS algorithm:
-    
-    - keeps selecting unfilled slot with fewest possible matches
-    - randomly chooses matching word for that slot
-    - backtracks if there is a slot with no matches"""
-
-    def fill(self, crossword, wordlist, animate):
-        if animate:
-            utils.clear_terminal()
-            print(crossword)
-
-        # if the grid is filled, succeed if every word is valid and otherwise fail
-        if crossword.is_filled():
-            return True
-
-        # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
-
-        # if some slot has zero matches, fail
-        if num_matches == 0:
-            return False
-        
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
-
-        # randomly shuffle matches
-        matches = list(matches)
-        shuffle(matches)
-
-        for match in matches:
-            if not Filler.is_valid_match(crossword, wordlist, slot, match):
-                continue
-
-            crossword.put_word(match, slot)
-
-            if self.fill(crossword, wordlist, animate):
-                return True
-
-        # if no match works, restore previous word
-        crossword.put_word(previous_word, slot)
-
-        return False
-
-
-class DFSBackjumpFiller(Filler):
-    """Fills the crossword using a naive DFS algorithm:
-    
-    - keeps selecting unfilled slot with fewest possible matches
-    - randomly chooses matching word for that slot
-    - backtracks if there is a slot with no matches
-    
-    Each iteration returns (is_filled, failed_slot)"""
-
-    def fill(self, crossword, wordlist, animate):
-        if animate:
-            utils.clear_terminal()
-            print(crossword)
-
-        # if the grid is filled, succeed if every word is valid and otherwise fail
-        if crossword.is_filled():
-            return True, None
-
-        # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
-
-        # if some slot has zero matches, fail
-        if num_matches == 0:
-            return False, slot
-        
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
-
-        # randomly shuffle matches
-        matches = list(matches)
-        shuffle(matches)
-        
-        for match in matches:
-            if not Filler.is_valid_match(crossword, wordlist, slot, match):
-                continue
-
-            crossword.put_word(match, slot)
-
-            is_filled, failed_slot = self.fill(crossword, wordlist, animate)
-            if is_filled:
-                return True, None
-            if failed_slot not in crossword.crossings[slot]:
-                # undo this word, keep backjumping
-                crossword.put_word(previous_word, slot)
-                return False, failed_slot
-
-        # if no match works, restore previous word
-        crossword.put_word(previous_word, slot)
-        return False, slot
-
-    
-class MinlookFiller(Filler):
-    """Fills the crossword using a dfs algorithm with minlook heuristic:
-    - keeps selecting unfilled slot with fewest possible matches
-    - considers k random matching word, chooses word with the most possible crossing words (product of # in each slot)
-    - backtracks if there is a slot with no matches
-    """
-    
-    def __init__(self, k):
-        self.k = k
-
-    def fill(self, crossword, wordlist, animate):
-        if animate:
-            utils.clear_terminal()
-            print(crossword)
-        
-        # if the grid is filled, succeed
-        if crossword.is_filled():
-            return True
-
-        # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
-
-        # if some slot has zero matches, fail
-        if num_matches == 0:
-            return False
-        
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
-
-        # randomly shuffle matches
-        matches = list(matches)
-        shuffle(matches)
-
-        while matches:
-            match_index, failed_indices = Filler.minlook(crossword, wordlist, slot, matches, self.k)
-
-            if match_index != -1:
-                match = matches[match_index]
-            
-            # remove failed matches and chosen match
-            matches = [matches[i] for i in range(len(matches)) if i != match_index and i not in failed_indices]
-            
-            # if no matches were found, try another batch if possible
-            if match_index == -1:
-                continue
-
-            if not Filler.is_valid_match(crossword, wordlist, slot, match):
-                continue
-
-            crossword.put_word(match, slot)
-            
-            if self.fill(crossword, wordlist, animate):
-                return True
-        
-        # if no match works, restore previous word
-        crossword.put_word(previous_word, slot)
-        return False
-
-
-class MinlookBackjumpFiller(Filler):
-    """Fills the crossword using a dfs algorithm with minlook heuristic:
-    - keeps selecting unfilled slot with fewest possible matches
-    - considers k random matching word, chooses word with the most possible crossing words (product of # in each slot)
-    - backtracks if there is a slot with no matches
-
-    Each iteration returns (is_filled, failed_slot)
-    """
-    
-    def __init__(self, k):
-        self.k = k
-
-    def fill(self, crossword, wordlist, animate):
-        if animate:
-            utils.clear_terminal()
-            print(crossword)
-        
-        # if the grid is filled, succeed
-        if crossword.is_filled():
-            return True, None
-
-        # choose slot with fewest matches
-        slot, num_matches = Filler.fewest_matches(crossword, wordlist)
-
-        # if some slot has zero matches, fail
-        if num_matches == 0:
-            return False, slot
-        
-        # iterate through all possible matches in the fewest-match slot
-        previous_word = crossword.words[slot]
-        matches = wordlist.get_matches(crossword.words[slot])
-
-        # randomly shuffle matches
-        matches = list(matches)
-        shuffle(matches)
-
-        while matches:
-            match_index, failed_indices = Filler.minlook(crossword, wordlist, slot, matches, self.k)
-
-            if match_index != -1:
-                match = matches[match_index]
-            
-            # remove failed matches and chosen match
-            matches = [matches[i] for i in range(len(matches)) if i != match_index and i not in failed_indices]
-            
-            # if no matches were found, try another batch if possible
-            if match_index == -1:
-                continue
-
-            if not Filler.is_valid_match(crossword, wordlist, slot, match):
-                continue
-
-            crossword.put_word(match, slot)
-            
-            is_filled, failed_slot = self.fill(crossword, wordlist, animate)
-            if is_filled:
-                return True, None
-            if failed_slot not in crossword.crossings[slot]:
-                # undo this word, keep backjumping
-                crossword.put_word(previous_word, slot)
-                return False, failed_slot
-        
-        # if no match works, restore previous word
-        crossword.put_word(previous_word, slot)
-        return False, slot
-
-
-WORDLIST_FOLDER = 'wordlist/'
-GRID_FOLDER = 'grid/'
-GRID_SUFFIX = '.txt'
-
-
-def read_grid(filepath):
-    with open(filepath, 'r') as f:
-        return f.read().splitlines()
-
-
-def iterate_wildcard_layouts(grid_lines, min_word_length: int = 3):
-    """Yield wildcard-resolved grids that respect rotational symmetry, block limits, and slot lengths."""
-    rows = len(grid_lines)
-    if rows == 0:
-        yield []
-        return
-
-    cols = len(grid_lines[0])
-    base_grid = [list(row) for row in grid_lines]
-
-    def has_short_empty_run(grid):
-        minimum = max(1, min_word_length)
-        if minimum <= 1:
-            return False
-
-        # Check rows
-        for row in grid:
-            run = 0
-            for value in row:
-                if value == EMPTY:
-                    run += 1
-                else:
-                    if 0 < run < minimum:
-                        return True
-                    run = 0
-            if 0 < run < minimum:
-                return True
-
-        # Check columns
-        for col_index in range(cols):
-            run = 0
-            for row_index in range(rows):
-                value = grid[row_index][col_index]
-                if value == EMPTY:
-                    run += 1
-                else:
-                    if 0 < run < minimum:
-                        return True
-                    run = 0
-            if 0 < run < minimum:
-                return True
-
-        return False
-
-    wildcard_coords = [(r, c) for r, row in enumerate(grid_lines) for c, value in enumerate(row) if value == '+']
-    if not wildcard_coords:
-        if not has_short_empty_run(base_grid):
-            yield [''.join(row) for row in base_grid]
-        return
-
-    groups = []
-    visited = set()
-    for row_index, col_index in wildcard_coords:
-        coord = (row_index, col_index)
-        if coord in visited:
-            continue
-
-        partner = (rows - 1 - row_index, cols - 1 - col_index)
-        group = [coord]
-        visited.add(coord)
-
-        if partner != coord and grid_lines[partner[0]][partner[1]] == '+':
-            group.append(partner)
-            visited.add(partner)
-
-        groups.append(tuple(sorted(group)))
-
-    groups.sort()
-
-    max_blocks = math.floor(0.2 * rows * cols)
-    existing_blocks = sum(row.count(BLOCK) for row in grid_lines)
-    additional_capacity = max_blocks - existing_blocks
-    if additional_capacity < 0:
-        additional_capacity = 0
-
-    max_additional = min(sum(len(group) for group in groups), additional_capacity)
-    indices = list(range(len(groups)))
-
-    for target_blocks in range(max_additional, -1, -1):
-        for combo_size in range(len(groups), -1, -1):
-            for combo in itertools.combinations(indices, combo_size):
-                if sum(len(groups[index]) for index in combo) != target_blocks:
-                    continue
-
-                selected = set(combo)
-                new_grid = [row[:] for row in base_grid]
-
-                for index, group in enumerate(groups):
-                    fill_value = BLOCK if index in selected else EMPTY
-                    for group_row, group_col in group:
-                        new_grid[group_row][group_col] = fill_value
-
-                if has_short_empty_run(new_grid):
-                    continue
-
-                yield [''.join(row) for row in new_grid]
-
-def read_wordlist(filepath, scored=True, min_score=50):
-    with open(filepath, 'r') as f:
-        words = f.readlines()
-
-    words = [w.upper() for w in words]
-
-    if scored:
-        words = [w.split(';') for w in words]
-        words = [w[0] for w in words if len(w) == 1 or int(w[1]) >= min_score]
-    
-    return Wordlist(words)
-
-
-def log_times(times, strategy):
-    print(f'Filled {len(times)} crosswords using {strategy}')
-    print(f'Min time: {min(times):.4f} seconds')
-    print(f'Avg time: {sum(times) / len(times):.4f} seconds')
-    print(f'Max time: {max(times):.4f} seconds')
-
-
-def get_filler(args):
-    if args.strategy == 'dfs':
-        return DFSFiller()
-    elif args.strategy == 'dfsb':
-        return DFSBackjumpFiller()
-    elif args.strategy == 'minlook':
-        return MinlookFiller(args.k)
-    elif args.strategy == 'mlb':
-        return MinlookBackjumpFiller(args.k)
-    else:
-        return None
-
-def run_test(args):
-    dirname = os.path.dirname(__file__)
-    wordlist_path_prefix = os.path.join(dirname, WORDLIST_FOLDER)
-    grid_path_prefix = os.path.join(dirname, GRID_FOLDER)
-
-    wordlist = read_wordlist(wordlist_path_prefix + args.wordlist_path)
-    
-    grid_path = grid_path_prefix + args.grid_path
-    if not grid_path.endswith(GRID_SUFFIX):
-        grid_path = grid_path + GRID_SUFFIX
-    
-    grid = read_grid(grid_path)
-    wildcard_present = any('+' in row for row in grid)
-    times = []
-
-    for _ in range(args.num_trials):
-        tic = time.time()
-
-        if wildcard_present:
-            crossword = None
-            for candidate_grid in iterate_wildcard_layouts(grid, min_word_length=args.min_word_length):
-                try:
-                    candidate_crossword = AmericanCrossword.from_grid(
-                        candidate_grid, min_word_length=args.min_word_length
-                    )
-                except ValueError:
-                    continue
-                filler = get_filler(args)
-                result = filler.fill(candidate_crossword, wordlist, args.animate)
-                is_filled = result[0] if isinstance(result, tuple) else result
-                if is_filled:
-                    crossword = candidate_crossword
-                    break
-            if crossword is None:
-                raise RuntimeError('Unable to fill crossword for any wildcard configuration.')
-        else:
-            crossword = AmericanCrossword.from_grid(grid, min_word_length=args.min_word_length)
-            filler = get_filler(args)
-            filler.fill(crossword, wordlist, args.animate)
-
-        duration = time.time() - tic
-
-        times.append(duration)
-
-        if not args.animate:
-            print(crossword)
-
-        print(f'\nFilled {crossword.cols}x{crossword.rows} crossword in {duration:.4f} seconds\n')
-    
-    log_times(times, args.strategy)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='ye olde swordsmith engine')
-    
-    parser.add_argument('-w', '--wordlist', dest='wordlist_path', type=str,
-                        default='spreadthewordlist.dict', help='filepath for wordlist')
-    parser.add_argument('-g', '--grid', dest='grid_path', type=str,
-                        default='15xcommon.txt', help='filepath for grid')
-    parser.add_argument('-t', '--num_trials', dest='num_trials', type=int,
-                        default=5, help='number of grids to try filling')
-    parser.add_argument('-a', '--animate',
-                        default=False, action='store_true', help='whether to animate grid filling')
-    parser.add_argument('-s', '--strategy', dest='strategy', type=str,
-                        default='dfs', help='which algorithm to run: dfs, dfsb, minlook, mlb')
-    parser.add_argument('-k', '--k', dest='k', type=int,
-                        default=5, help='k constant for minlook')
-    parser.add_argument('--min-word-length', dest='min_word_length', type=int,
-                        default=3, help='minimum allowed slot length in the grid')
-    args = parser.parse_args()
-
-    run_test(args)
-
-
-if __name__ == "__main__":
-    main()
+        """Returns list of new words that cross the given slot, given a word to theoretically put
