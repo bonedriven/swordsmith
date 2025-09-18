@@ -20,6 +20,47 @@ GRID_5X_OPEN_PLUS = SWORDSMITH_DIR / "grid" / "5xopenplus.txt"
 GRID_15X = SWORDSMITH_DIR / "grid" / "15xcommon.txt"
 WORDLIST = SWORDSMITH_DIR / "wordlist" / "spreadthewordlist.dict"
 
+
+class TestMinWordLengthEnforcement(unittest.TestCase):
+    def test_two_letter_run_raises(self) -> None:
+        grid = [
+            ".. ",
+            ".. ",
+            "   ",
+        ]
+
+        with self.assertRaises(ValueError) as exc_info:
+            sw.AmericanCrossword.from_grid(grid, min_word_length=3)
+
+        self.assertIn("(0, 0)", str(exc_info.exception))
+
+    def test_wildcard_respects_min_length(self) -> None:
+        grid = [
+            "+. ",
+            "...",
+            " .+",
+        ]
+
+        all_layouts = list(sw.iterate_wildcard_layouts(grid, min_word_length=1))
+        filtered_layouts = list(sw.iterate_wildcard_layouts(grid, min_word_length=3))
+
+        self.assertGreater(len(all_layouts), len(filtered_layouts))
+
+        for layout in filtered_layouts:
+            sw.AmericanCrossword.from_grid(layout, min_word_length=3)
+
+    def test_valid_grid_constructs(self) -> None:
+        grid = [
+            "...",
+            "...",
+            "...",
+        ]
+
+        crossword = sw.AmericanCrossword.from_grid(grid, min_word_length=3)
+        self.assertEqual(crossword.rows, 3)
+        self.assertTrue(all(len(slot) >= 3 for slot in crossword.slots))
+
+
 class Test5xDFS(unittest.TestCase):
     def runTest(self) -> None:
         grid = sw.read_grid(GRID_5X)
