@@ -2,6 +2,7 @@ import utils
 
 import math
 import argparse
+import itertools
 import time
 import os
 
@@ -660,6 +661,66 @@ def read_grid(filepath):
     with open(filepath, 'r') as f:
         return f.read().splitlines()
 
+
+def iterate_wildcard_layouts(grid_lines):
+    """Yield wildcard-resolved grids that respect rotational symmetry and block limits."""
+    rows = len(grid_lines)
+    if rows == 0:
+        yield []
+        return
+
+    cols = len(grid_lines[0])
+    base_grid = [list(row) for row in grid_lines]
+
+    wildcard_coords = [(r, c) for r, row in enumerate(grid_lines) for c, value in enumerate(row) if value == '+']
+    if not wildcard_coords:
+        yield [''.join(row) for row in base_grid]
+        return
+
+    groups = []
+    visited = set()
+    for row_index, col_index in wildcard_coords:
+        coord = (row_index, col_index)
+        if coord in visited:
+            continue
+
+        partner = (rows - 1 - row_index, cols - 1 - col_index)
+        group = [coord]
+        visited.add(coord)
+
+        if partner != coord and grid_lines[partner[0]][partner[1]] == '+':
+            group.append(partner)
+            visited.add(partner)
+
+        groups.append(tuple(sorted(group)))
+
+    groups.sort()
+
+    max_blocks = math.floor(0.2 * rows * cols)
+    existing_blocks = sum(row.count(BLOCK) for row in grid_lines)
+    additional_capacity = max_blocks - existing_blocks
+    if additional_capacity < 0:
+        additional_capacity = 0
+
+    max_additional = min(sum(len(group) for group in groups), additional_capacity)
+    indices = list(range(len(groups)))
+
+    for target_blocks in range(max_additional, -1, -1):
+        for combo_size in range(len(groups), -1, -1):
+            for combo in itertools.combinations(indices, combo_size):
+                if sum(len(groups[index]) for index in combo) != target_blocks:
+                    continue
+
+                selected = set(combo)
+                new_grid = [row[:] for row in base_grid]
+
+                for index, group in enumerate(groups):
+                    fill_value = BLOCK if index in selected else EMPTY
+                    for group_row, group_col in group:
+                        new_grid[group_row][group_col] = fill_value
+
+                yield [''.join(row) for row in new_grid]
+
 def read_wordlist(filepath, scored=True, min_score=50):
     with open(filepath, 'r') as f:
         words = f.readlines()
@@ -704,15 +765,28 @@ def run_test(args):
         grid_path = grid_path + GRID_SUFFIX
     
     grid = read_grid(grid_path)
+    wildcard_present = any('+' in row for row in grid)
     times = []
 
     for _ in range(args.num_trials):
         tic = time.time()
 
-        crossword = AmericanCrossword.from_grid(grid)
-        filler = get_filler(args)
-
-        filler.fill(crossword, wordlist, args.animate)
+        if wildcard_present:
+            crossword = None
+            for candidate_grid in iterate_wildcard_layouts(grid):
+                candidate_crossword = AmericanCrossword.from_grid(candidate_grid)
+                filler = get_filler(args)
+                result = filler.fill(candidate_crossword, wordlist, args.animate)
+                is_filled = result[0] if isinstance(result, tuple) else result
+                if is_filled:
+                    crossword = candidate_crossword
+                    break
+            if crossword is None:
+                raise RuntimeError('Unable to fill crossword for any wildcard configuration.')
+        else:
+            crossword = AmericanCrossword.from_grid(grid)
+            filler = get_filler(args)
+            filler.fill(crossword, wordlist, args.animate)
 
         duration = time.time() - tic
 
@@ -720,7 +794,7 @@ def run_test(args):
 
         if not args.animate:
             print(crossword)
-        
+
         print(f'\nFilled {crossword.cols}x{crossword.rows} crossword in {duration:.4f} seconds\n')
     
     log_times(times, args.strategy)
