@@ -206,5 +206,79 @@ class TestQuadStackMinlookBackjump(unittest.TestCase):
         self.assertCountEqual(filled_stack_words, QUADSTACK_ACROSS)
 
 
+class TestDLXMatrixEncoding(unittest.TestCase):
+    def runTest(self) -> None:
+        grid = ["...", "...", "..."]
+        crossword = sw.AmericanCrossword.from_grid(grid)
+        words = ["ACE", "GUT", "ERA", "AGE", "CUR", "ETA"]
+        wordlist = sw.Wordlist(words)
+        filler = sw.DLXFiller()
+
+        matrix = filler._build_exact_cover(crossword, wordlist)
+
+        slot_columns = {
+            key.value for key in matrix.columns if key.kind == filler.SLOT_KIND
+        }
+        self.assertEqual(slot_columns, set(crossword.slots))
+
+        across_slots = {
+            slot[0][0]: slot
+            for slot in crossword.slots
+            if sw.AmericanCrossword.is_across_slot(slot)
+        }
+        slot_row0 = across_slots[0]
+        row_data = matrix.row_data[(slot_row0, "ACE")]
+        letter_values = {key.value for key in row_data.letter_columns}
+        self.assertSetEqual(
+            letter_values,
+            {((0, 0), "A"), ((0, 1), "C"), ((0, 2), "E")},
+        )
+
+        letter_columns = {
+            key.value for key in matrix.columns if key.kind == filler.LETTER_KIND
+        }
+        self.assertIn(((0, 0), "A"), letter_columns)
+        self.assertIn(((1, 0), "G"), letter_columns)
+
+
+class TestDLXSimpleFill(unittest.TestCase):
+    def runTest(self) -> None:
+        grid = ["...", "...", "..."]
+        crossword = sw.AmericanCrossword.from_grid(grid)
+        words = ["ACE", "GUT", "ERA", "AGE", "CUR", "ETA"]
+        wordlist = sw.Wordlist(words)
+        filler = sw.DLXFiller()
+
+        result = filler.fill(crossword, wordlist, animate=False)
+        self.assertTrue(result)
+        self.assertTrue(crossword.is_filled())
+
+        across_words = {
+            crossword.words[slot]
+            for slot in crossword.slots
+            if sw.AmericanCrossword.is_across_slot(slot)
+        }
+        down_words = {
+            crossword.words[slot]
+            for slot in crossword.slots
+            if sw.AmericanCrossword.is_down_slot(slot)
+        }
+
+        self.assertSetEqual(across_words, {"ACE", "GUT", "ERA"})
+        self.assertSetEqual(down_words, {"AGE", "CUR", "ETA"})
+
+
+class TestDLXRejectsDuplicateSolution(unittest.TestCase):
+    def runTest(self) -> None:
+        grid = ["..", ".."]
+        crossword = sw.AmericanCrossword.from_grid(grid)
+        wordlist = sw.Wordlist(["AA"])
+        filler = sw.DLXFiller()
+
+        result = filler.fill(crossword, wordlist, animate=False)
+        self.assertFalse(result)
+        self.assertFalse(crossword.is_filled())
+
+
 if __name__ == "__main__":
     unittest.main()
