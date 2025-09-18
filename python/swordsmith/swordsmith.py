@@ -8,6 +8,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from dataclasses import dataclass
 from random import shuffle
 from typing import Dict, Iterable, Iterator, List, MutableMapping, Optional, Sequence, Tuple, Union
 
@@ -28,6 +29,25 @@ BLOCK: str = " "
 Square = Tuple[int, int]
 Slot = Tuple[Square, ...]
 WordMatches = List[str]
+
+
+@dataclass(frozen=True)
+class ColumnKey:
+    """Identifier for a column in the DLX matrix."""
+
+    kind: str
+    value: object
+
+
+@dataclass
+class DLXRowData:
+    """Metadata describing a row in the DLX matrix."""
+
+    slot: Slot
+    word: str
+    square_letters: Dict[Square, str]
+    letter_columns: Tuple[ColumnKey, ...]
+
 
 
 class Crossword:
@@ -340,6 +360,254 @@ class Wordlist:
     @staticmethod
     def _matches_pattern(word: str, pattern: str) -> bool:
         return all(pattern[i] in {EMPTY, letter} for i, letter in enumerate(word))
+
+
+class DLXNode:
+    """Node used by the dancing links data structure."""
+
+    def __init__(self, column: Optional["ColumnNode"] = None) -> None:
+        self.left: "DLXNode" = self
+        self.right: "DLXNode" = self
+        self.up: "DLXNode" = self
+        self.down: "DLXNode" = self
+        self.column: Optional["ColumnNode"] = column
+        self.row_data: Optional[DLXRowData] = None
+
+
+class ColumnNode(DLXNode):
+    """Column header node for dancing links."""
+
+    def __init__(self, key: ColumnKey, is_primary: bool) -> None:
+        super().__init__(self)
+        self.key = key
+        self.is_primary = is_primary
+        self.size = 0
+
+
+@dataclass
+class ExactCoverMatrix:
+    """Container capturing the DLX matrix for a crossword."""
+
+    root: ColumnNode
+    columns: Dict[ColumnKey, ColumnNode]
+    row_nodes: Dict[Tuple[Slot, str], DLXNode]
+    row_data: Dict[Tuple[Slot, str], DLXRowData]
+
+
+class DLXBuilder:
+    """Helper to assemble the DLX matrix for the crossword fill."""
+
+    def __init__(self) -> None:
+        self.root = ColumnNode(ColumnKey("root", "root"), is_primary=False)
+        self.columns: Dict[ColumnKey, ColumnNode] = {}
+        self.row_nodes: Dict[Tuple[Slot, str], DLXNode] = {}
+        self.row_data: Dict[Tuple[Slot, str], DLXRowData] = {}
+
+    def get_column(self, key: ColumnKey, is_primary: bool) -> ColumnNode:
+        column = self.columns.get(key)
+        if column is not None:
+            return column
+        column = ColumnNode(key, is_primary=is_primary)
+        # Insert new column to the left of root.
+        column.left = self.root.left
+        column.right = self.root
+        column.left.right = column
+        column.right.left = column
+        self.columns[key] = column
+        return column
+
+    def add_row(self, columns: Sequence[ColumnNode], data: DLXRowData) -> None:
+        if not columns:
+            return
+
+        first_node: Optional[DLXNode] = None
+        for column in columns:
+            node = DLXNode(column)
+            node.row_data = data
+
+            # Vertical linkage within column.
+            node.down = column
+            node.up = column.up
+            column.up.down = node
+            column.up = node
+            column.size += 1
+
+            # Horizontal linkage within row.
+            if first_node is None:
+                first_node = node
+            else:
+                node.left = first_node.left
+                node.right = first_node
+                node.left.right = node
+                node.right.left = node
+
+        if first_node is None:
+            return
+
+        key = (data.slot, data.word)
+        self.row_nodes[key] = first_node
+        self.row_data[key] = data
+
+    def build(self) -> ExactCoverMatrix:
+        return ExactCoverMatrix(self.root, self.columns, self.row_nodes, self.row_data)
+
+
+class DLXSolver:
+    """Algorithm X solver operating on the crossword DLX matrix."""
+
+    def __init__(self, matrix: ExactCoverMatrix, crossword: Crossword) -> None:
+        self.matrix = matrix
+        self.root = matrix.root
+        self.crossword = crossword
+        self.solution: List[DLXRowData] = []
+        self.used_words: set[str] = set()
+        self.assigned_letters: Dict[Square, str] = {}
+        self.assignment_counts: Dict[Square, int] = {}
+
+    def cover(self, column: ColumnNode) -> None:
+        column.right.left = column.left
+        column.left.right = column.right
+        row = column.down
+        while row != column:
+            node = row.right
+            while node != row:
+                node.down.up = node.up
+                node.up.down = node.down
+                if node.column is not None:
+                    node.column.size -= 1
+                node = node.right
+            row = row.down
+
+    def uncover(self, column: ColumnNode) -> None:
+        row = column.up
+        while row != column:
+            node = row.left
+            while node != row:
+                if node.column is not None:
+                    node.column.size += 1
+                node.down.up = node
+                node.up.down = node
+                node = node.left
+            row = row.up
+        column.right.left = column
+        column.left.right = column
+
+    def _cover_row_columns(self, row_node: DLXNode) -> None:
+        node = row_node.right
+        while node != row_node:
+            column = node.column
+            if column is not None and column.is_primary:
+                self.cover(column)
+            node = node.right
+
+    def _uncover_row_columns(self, row_node: DLXNode) -> None:
+        node = row_node.left
+        while node != row_node:
+            column = node.column
+            if column is not None and column.is_primary:
+                self.uncover(column)
+            node = node.left
+
+    def _assign_letters(self, row_data: DLXRowData) -> None:
+        for square, letter in row_data.square_letters.items():
+            count = self.assignment_counts.get(square)
+            if count is None:
+                self.assignment_counts[square] = 1
+                self.assigned_letters[square] = letter
+            else:
+                self.assignment_counts[square] = count + 1
+
+    def _unassign_letters(self, row_data: DLXRowData) -> None:
+        for square in row_data.square_letters:
+            count = self.assignment_counts.get(square)
+            if count is None:
+                continue
+            if count == 1:
+                del self.assignment_counts[square]
+                self.assigned_letters.pop(square, None)
+            else:
+                self.assignment_counts[square] = count - 1
+
+    def _row_compatible(self, row_data: DLXRowData) -> bool:
+        word = row_data.word
+        if word in self.used_words:
+            return False
+        for square, letter in row_data.square_letters.items():
+            existing = self.assigned_letters.get(square)
+            if existing is not None and existing != letter:
+                return False
+        return True
+
+    def _choose_column(self) -> Optional[ColumnNode]:
+        best: Optional[ColumnNode] = None
+        best_size = math.inf
+        column = self.root.right
+        while isinstance(column, ColumnNode) and column != self.root:
+            if column.is_primary and column.size < best_size:
+                best = column
+                best_size = column.size
+                if best_size == 0:
+                    break
+            column = column.right
+        return best
+
+    def _search(self) -> bool:
+        column = self._choose_column()
+        if column is None:
+            return True
+        if column.size == 0:
+            return False
+
+        self.cover(column)
+        row = column.down
+        while row != column:
+            row_data = row.row_data
+            if row_data is not None and self._row_compatible(row_data):
+                self.solution.append(row_data)
+                self.used_words.add(row_data.word)
+                self._assign_letters(row_data)
+                self._cover_row_columns(row)
+
+                if self._search():
+                    return True
+
+                self._uncover_row_columns(row)
+                self._unassign_letters(row_data)
+                self.used_words.discard(row_data.word)
+                self.solution.pop()
+
+            row = row.down
+
+        self.uncover(column)
+        return False
+
+    def _apply_prefilled(self) -> bool:
+        for slot, pattern in self.crossword.words.items():
+            if not Crossword.is_word_filled(pattern):
+                continue
+            key = (slot, pattern)
+            row_node = self.matrix.row_nodes.get(key)
+            row_data = self.matrix.row_data.get(key)
+            if row_node is None or row_data is None:
+                return False
+            if not self._row_compatible(row_data):
+                return False
+            column = row_node.column
+            if column is None:
+                return False
+            self.solution.append(row_data)
+            self.used_words.add(row_data.word)
+            self._assign_letters(row_data)
+            self.cover(column)
+            self._cover_row_columns(row_node)
+        return True
+
+    def solve(self) -> Optional[List[DLXRowData]]:
+        if not self._apply_prefilled():
+            return None
+        if self._search():
+            return list(self.solution)
+        return None
 
 
 class Filler(ABC):
@@ -791,6 +1059,95 @@ class MinlookBackjumpFiller(Filler):
         return False, slot
 
 
+class DLXFiller(Filler):
+    """Exact-cover based crossword filler using Algorithm X."""
+
+    SLOT_KIND = "slot"
+    LETTER_KIND = "letter"
+
+    def _build_exact_cover(self, crossword: Crossword, wordlist: Wordlist) -> ExactCoverMatrix:
+        builder = DLXBuilder()
+        slot_columns: Dict[Slot, ColumnNode] = {}
+        for slot in crossword.slots:
+            key = ColumnKey(self.SLOT_KIND, slot)
+            slot_columns[slot] = builder.get_column(key, is_primary=True)
+
+        crossing_squares: set[Square] = {
+            square
+            for square, slot_map in crossword.squares.items()
+            if len(slot_map) > 1
+        }
+
+        letter_columns: Dict[Tuple[Square, str], ColumnNode] = {}
+        letter_keys: Dict[Tuple[Square, str], ColumnKey] = {}
+
+        for slot in crossword.slots:
+            pattern = crossword.words[slot]
+            matches = list(wordlist.get_matches(pattern))
+            normalized_pattern = pattern.upper()
+            if Crossword.is_word_filled(pattern) and normalized_pattern not in matches:
+                matches.append(normalized_pattern)
+
+            unique_matches = sorted({match.upper() for match in matches})
+            for match in unique_matches:
+                if len(match) != len(slot):
+                    continue
+
+                square_letters = {
+                    square: match[index]
+                    for index, square in enumerate(slot)
+                }
+
+                columns: List[ColumnNode] = [slot_columns[slot]]
+                row_letter_keys: List[ColumnKey] = []
+                for index, square in enumerate(slot):
+                    if square not in crossing_squares:
+                        continue
+                    letter = match[index]
+                    key_value = (square, letter)
+                    column = letter_columns.get(key_value)
+                    if column is None:
+                        column_key = ColumnKey(self.LETTER_KIND, key_value)
+                        letter_keys[key_value] = column_key
+                        column = builder.get_column(column_key, is_primary=False)
+                        letter_columns[key_value] = column
+                    else:
+                        column_key = letter_keys[key_value]
+                    columns.append(column)
+                    row_letter_keys.append(column_key)
+
+                row_data = DLXRowData(
+                    slot=slot,
+                    word=match,
+                    square_letters=square_letters,
+                    letter_columns=tuple(row_letter_keys),
+                )
+                builder.add_row(columns, row_data)
+
+        return builder.build()
+
+    def fill(self, crossword: Crossword, wordlist: Wordlist, animate: bool):
+        matrix = self._build_exact_cover(crossword, wordlist)
+        solver = DLXSolver(matrix, crossword)
+        solution = solver.solve()
+        if solution is None:
+            return False
+
+        original_words = {slot: word for slot, word in crossword.words.items()}
+        try:
+            for row in solution:
+                crossword.put_word(row.word, row.slot)
+        except Exception:
+            for slot, word in original_words.items():
+                crossword.put_word(word, slot)
+            return False
+
+        if animate:
+            utils.clear_terminal()
+            print(crossword)
+        return True
+
+
 WORDLIST_FOLDER = "wordlist"
 GRID_FOLDER = "grid"
 GRID_SUFFIX = ".txt"
@@ -859,6 +1216,8 @@ def get_filler(args) -> Optional[Filler]:
         return MinlookFiller(args.k)
     if args.strategy == "mlb":
         return MinlookBackjumpFiller(args.k)
+    if args.strategy == "dlx":
+        return DLXFiller()
     return None
 
 
@@ -869,6 +1228,30 @@ def run_test(args) -> None:
     grid_path_prefix = os.path.join(dirname, GRID_FOLDER)
 
     wordlist = read_wordlist(os.path.join(wordlist_path_prefix, args.wordlist_path))
+
+    if getattr(args, "benchmark_open", False):
+        benchmark_grid_path = os.path.join(grid_path_prefix, "15xopen.txt")
+        benchmark_grid = read_grid(benchmark_grid_path)
+        strategies = ["dfs", "dfsb", "minlook", "mlb", "dlx"]
+        print("Running 15xopen benchmarks:\n")
+        for strategy in strategies:
+            benchmark_args = argparse.Namespace(strategy=strategy, k=args.k)
+            times: List[float] = []
+            for _ in range(args.num_trials):
+                tic = time.time()
+                crossword = AmericanCrossword.from_grid(benchmark_grid)
+                filler = get_filler(benchmark_args)
+                if filler is None:
+                    raise ValueError(f"unknown strategy: {strategy}")
+                result = filler.fill(crossword, wordlist, False)
+                if isinstance(result, tuple):
+                    result = result[0]
+                if not result:
+                    raise RuntimeError(f"failed to fill crossword using {strategy}")
+                times.append(time.time() - tic)
+            log_times(times, strategy)
+            print()
+        return
 
     grid_path = os.path.join(grid_path_prefix, args.grid_path)
     if not grid_path.endswith(GRID_SUFFIX):
@@ -943,7 +1326,7 @@ def main() -> None:
         dest="strategy",
         type=str,
         default="dfs",
-        help="which algorithm to run: dfs, dfsb, minlook, mlb",
+        help="which algorithm to run: dfs, dfsb, minlook, mlb, dlx",
     )
     parser.add_argument(
         "-k",
@@ -952,6 +1335,12 @@ def main() -> None:
         type=int,
         default=5,
         help="k constant for minlook",
+    )
+    parser.add_argument(
+        "--benchmark-open",
+        dest="benchmark_open",
+        action="store_true",
+        help="benchmark all strategies on the 15xopen grid",
     )
     args = parser.parse_args()
 
@@ -969,6 +1358,7 @@ __all__ = [
     "DFSBackjumpFiller",
     "MinlookFiller",
     "MinlookBackjumpFiller",
+    "DLXFiller",
     "read_grid",
     "read_wordlist",
     "log_times",
