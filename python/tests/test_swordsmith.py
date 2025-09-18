@@ -32,6 +32,57 @@ class Test5xDFS(unittest.TestCase):
         self.assertTrue(crossword.is_filled())
 
 
+class TestBlockPlacementSymmetry(unittest.TestCase):
+    def runTest(self) -> None:
+        crossword = sw.AmericanCrossword(3, 3)
+        crossword.put_block(0, 1)
+
+        self.assertEqual(crossword.grid[0][1], sw.BLOCK)
+        self.assertEqual(crossword.grid[2][1], sw.BLOCK)
+
+
+class TestFromGridSymmetryValidation(unittest.TestCase):
+    def runTest(self) -> None:
+        asym_grid = [
+            [sw.BLOCK, sw.EMPTY],
+            [sw.EMPTY, sw.EMPTY],
+        ]
+
+        with self.assertRaises(ValueError):
+            sw.AmericanCrossword.from_grid(asym_grid)
+
+
+class TestWildcardLayoutSymmetry(unittest.TestCase):
+    def runTest(self) -> None:
+        grid = [
+            ['+', sw.BLOCK, '+', sw.EMPTY],
+            [sw.EMPTY, sw.EMPTY, sw.EMPTY, '+'],
+            [sw.EMPTY, sw.EMPTY, sw.EMPTY, sw.EMPTY],
+            [sw.EMPTY, '+', sw.BLOCK, '+'],
+        ]
+
+        layouts = list(sw.iterate_wildcard_layouts(grid))
+        self.assertTrue(layouts, msg='No layouts were generated from wildcard grid')
+
+        for layout in layouts:
+            rows = len(layout)
+            cols = len(layout[0]) if rows else 0
+            for row_index in range(rows):
+                for col_index in range(cols):
+                    if layout[row_index][col_index] == sw.BLOCK:
+                        partner_row = rows - 1 - row_index
+                        partner_col = cols - 1 - col_index
+                        self.assertEqual(
+                            layout[partner_row][partner_col],
+                            sw.BLOCK,
+                            msg=(
+                                'Asymmetric layout emitted: '
+                                f'{(row_index, col_index)} lacks partner '
+                                f'at {(partner_row, partner_col)}'
+                            ),
+                        )
+
+
 class Test5xDFSBackjump(unittest.TestCase):
     def runTest(self) -> None:
         grid = sw.read_grid(GRID_5X)

@@ -110,37 +110,93 @@ class Crossword:
 
 
 class AmericanCrossword(Crossword):
-    def __init__(self, rows, cols):
+    def __init__(self, rows, cols, require_rotational_symmetry=True):
         super(AmericanCrossword, self).__init__()
 
         self.rows = rows
         self.cols = cols
+        self.require_rotational_symmetry = require_rotational_symmetry
         self.grid = [[EMPTY for c in range(cols)] for r in range(rows)] # 2D array of squares
 
         self.__generate_slots_from_grid()
 
+    def _rotational_partner(self, row, col):
+        """Return the 180° rotationally symmetric coordinate for the given cell."""
+        return self.rows - 1 - row, self.cols - 1 - col
+
+    def _set_block_pair(self, row, col):
+        """Place a block at the given coordinate and any required rotational partner."""
+        partner_row, partner_col = self._rotational_partner(row, col)
+
+        coords = {(row, col)}
+        if self.require_rotational_symmetry:
+            coords.add((partner_row, partner_col))
+
+        for target_row, target_col in coords:
+            value = self.grid[target_row][target_col]
+            if value not in (EMPTY, BLOCK):
+                raise ValueError(
+                    "Cannot place block at "
+                    f"{(row, col)}; letter '{value}' already present at "
+                    f"{(target_row, target_col)}."
+                )
+
+        for target_row, target_col in coords:
+            self.grid[target_row][target_col] = BLOCK
+
     @classmethod
-    def from_grid(cls, grid, all_checked=True):
+    def from_grid(cls, grid, all_checked=True, require_rotational_symmetry=True):
         """Generates AmericanCrossword from 2D array of characters"""
+        grid = [row for row in grid if len(row) > 0]
+        if not grid:
+            raise ValueError('Grid must contain at least one non-empty row.')
         rows = len(grid)
         cols = len(grid[0])
 
-        blocks = []
-        
+        blocks = set()
+
         for r in range(rows):
             for c in range(cols):
                 if grid[r][c] == BLOCK:
-                    blocks.append((r, c))
+                    blocks.add((r, c))
 
-        xw = cls(rows, cols)
+        if require_rotational_symmetry:
+            for row, col in blocks:
+                partner = (rows - 1 - row, cols - 1 - col)
+                if partner not in blocks:
+                    raise ValueError(
+                        "Grid violates rotational symmetry: block at "
+                        f"{(row, col)} lacks partner at {partner}."
+                    )
+
+        xw = cls(rows, cols, require_rotational_symmetry=require_rotational_symmetry)
         if blocks:
             xw.put_blocks(blocks)
 
         for r in range(rows):
             for c in range(cols):
                 if grid[r][c] != BLOCK and grid[r][c] != EMPTY:
+                    if require_rotational_symmetry and xw.grid[r][c] == BLOCK:
+                        partner = xw._rotational_partner(r, c)
+                        raise ValueError(
+                            "Grid violates rotational symmetry: letter "
+                            f"'{grid[r][c]}' at {(r, c)} conflicts with block at "
+                            f"{partner}."
+                        )
                     xw.grid[r][c] = grid[r][c]
-        
+
+        if require_rotational_symmetry:
+            for r in range(rows):
+                for c in range(cols):
+                    if xw.grid[r][c] != BLOCK and xw.grid[r][c] != EMPTY:
+                        partner_row, partner_col = xw._rotational_partner(r, c)
+                        if xw.grid[partner_row][partner_col] == BLOCK:
+                            raise ValueError(
+                                "Grid violates rotational symmetry after letter copy: "
+                                f"letter '{xw.grid[r][c]}' at {(r, c)} conflicts with block at "
+                                f"{(partner_row, partner_col)}."
+                            )
+
         xw.__generate_slots_from_grid(all_checked)
 
         return xw
@@ -192,13 +248,13 @@ class AmericanCrossword(Crossword):
     
     def put_block(self, row, col):
         """Places block in certain square"""
-        self.grid[row][col] = BLOCK
+        self._set_block_pair(row, col)
         self.__generate_slots_from_grid()
-    
+
     def put_blocks(self, coords):
         """Places list of blocks in specified squares"""
         for row, col in coords:
-            self.grid[row][col] = BLOCK
+            self._set_block_pair(row, col)
         self.__generate_slots_from_grid()
     
     def add_slot(self, squares, word):
@@ -662,8 +718,9 @@ def read_grid(filepath):
         return f.read().splitlines()
 
 
-def iterate_wildcard_layouts(grid_lines):
+def iterate_wildcard_layouts(grid_lines, require_rotational_symmetry=True):
     """Yield wildcard-resolved grids that respect rotational symmetry and block limits."""
+    grid_lines = [row for row in grid_lines if len(row) > 0]
     rows = len(grid_lines)
     if rows == 0:
         yield []
@@ -672,9 +729,30 @@ def iterate_wildcard_layouts(grid_lines):
     cols = len(grid_lines[0])
     base_grid = [list(row) for row in grid_lines]
 
+    def is_block_symmetric(grid_data):
+        for r in range(rows):
+            for c in range(cols):
+                if grid_data[r][c] == BLOCK:
+                    partner_row = rows - 1 - r
+                    partner_col = cols - 1 - c
+                    if grid_data[partner_row][partner_col] != BLOCK:
+                        return False
+        return True
+
+    if require_rotational_symmetry:
+        for r in range(rows):
+            for c in range(cols):
+                if grid_lines[r][c] == BLOCK:
+                    partner_row = rows - 1 - r
+                    partner_col = cols - 1 - c
+                    if grid_lines[partner_row][partner_col] != BLOCK:
+                        return
+
     wildcard_coords = [(r, c) for r, row in enumerate(grid_lines) for c, value in enumerate(row) if value == '+']
     if not wildcard_coords:
-        yield [''.join(row) for row in base_grid]
+        resolved_grid = [''.join(row) for row in base_grid]
+        if not require_rotational_symmetry or is_block_symmetric(base_grid):
+            yield resolved_grid
         return
 
     groups = []
@@ -719,7 +797,8 @@ def iterate_wildcard_layouts(grid_lines):
                     for group_row, group_col in group:
                         new_grid[group_row][group_col] = fill_value
 
-                yield [''.join(row) for row in new_grid]
+                if not require_rotational_symmetry or is_block_symmetric(new_grid):
+                    yield [''.join(row) for row in new_grid]
 
 def read_wordlist(filepath, scored=True, min_score=50):
     with open(filepath, 'r') as f:
@@ -768,13 +847,18 @@ def run_test(args):
     wildcard_present = any('+' in row for row in grid)
     times = []
 
+    require_rotational_symmetry = getattr(args, 'require_rotational_symmetry', True)
+
     for _ in range(args.num_trials):
         tic = time.time()
 
         if wildcard_present:
             crossword = None
-            for candidate_grid in iterate_wildcard_layouts(grid):
-                candidate_crossword = AmericanCrossword.from_grid(candidate_grid)
+            for candidate_grid in iterate_wildcard_layouts(grid, require_rotational_symmetry=require_rotational_symmetry):
+                candidate_crossword = AmericanCrossword.from_grid(
+                    candidate_grid,
+                    require_rotational_symmetry=require_rotational_symmetry,
+                )
                 filler = get_filler(args)
                 result = filler.fill(candidate_crossword, wordlist, args.animate)
                 is_filled = result[0] if isinstance(result, tuple) else result
@@ -784,7 +868,9 @@ def run_test(args):
             if crossword is None:
                 raise RuntimeError('Unable to fill crossword for any wildcard configuration.')
         else:
-            crossword = AmericanCrossword.from_grid(grid)
+            crossword = AmericanCrossword.from_grid(
+                grid, require_rotational_symmetry=require_rotational_symmetry
+            )
             filler = get_filler(args)
             filler.fill(crossword, wordlist, args.animate)
 
@@ -802,7 +888,7 @@ def run_test(args):
 
 def main():
     parser = argparse.ArgumentParser(description='ye olde swordsmith engine')
-    
+
     parser.add_argument('-w', '--wordlist', dest='wordlist_path', type=str,
                         default='spreadthewordlist.dict', help='filepath for wordlist')
     parser.add_argument('-g', '--grid', dest='grid_path', type=str,
@@ -815,8 +901,21 @@ def main():
                         default='dfs', help='which algorithm to run: dfs, dfsb, minlook, mlb')
     parser.add_argument('-k', '--k', dest='k', type=int,
                         default=5, help='k constant for minlook')
+    parser.set_defaults(require_rotational_symmetry=True)
+    parser.add_argument(
+        '--require-rotational-symmetry',
+        dest='require_rotational_symmetry',
+        action='store_true',
+        help='Enforce 180-degree rotational symmetry for blocks (default).',
+    )
+    parser.add_argument(
+        '--no-rotational-symmetry',
+        dest='require_rotational_symmetry',
+        action='store_false',
+        help='Allow asymmetric block placement when loading or resolving grids.',
+    )
     args = parser.parse_args()
-    
+
     run_test(args)
 
 
