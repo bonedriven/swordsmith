@@ -1,7 +1,11 @@
 import sys
 import unittest
+from pathlib import Path
 
-sys.path.append('../swordsmith')
+
+TEST_DIR = Path(__file__).resolve().parent
+SWORDSMITH_DIR = (TEST_DIR / ".." / "swordsmith").resolve()
+sys.path.append(str(SWORDSMITH_DIR))
 
 import swordsmith as sw
 
@@ -9,6 +13,7 @@ GRID_5x = '../swordsmith/grid/5x.txt'
 GRID_15x = '../swordsmith/grid/15xcommon.txt'
 GRID_15x_QUAD = '../swordsmith/grid/15xquadstack.txt'
 WORDLIST = '../swordsmith/wordlist/spreadthewordlist.dict'
+
 
 QUADSTACK_WORDS = [
     'ABCDEFGHIJKLMNO',
@@ -114,7 +119,6 @@ class Test15xMinlookBackjump(unittest.TestCase):
         filler.fill(crossword, wordlist, animate=False)
         self.assertTrue(crossword.is_filled())
 
-
 class TestQuadStackDFS(unittest.TestCase):
     def runTest(self):
         grid = sw.read_grid(GRID_15x_QUAD)
@@ -179,3 +183,6 @@ class TestQuadStackMinlookBackjump(unittest.TestCase):
         self.assertCountEqual(filled_stack_words, QUADSTACK_ACROSS)
 
 unittest.main()
+
+if __name__ == "__main__":
+    unittest.main()

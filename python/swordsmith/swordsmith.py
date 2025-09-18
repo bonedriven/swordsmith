@@ -301,16 +301,19 @@ class Wordlist:
     
     def get_matches(self, pattern):
         if pattern in self.pattern_matches:
-            return self.pattern_matches[pattern]
-        
+            return set(self.pattern_matches[pattern])
+
         length = len(pattern)
         indices = [self.indices[length][i][letter] for i, letter in enumerate(pattern) if letter != EMPTY]
         if indices:
             matches = set.intersection(*indices)
         else:
-            matches = self.lengths[length]
+            matches = set(self.lengths[length])
 
-        return matches
+        matches = set(matches)
+        self.pattern_matches[pattern] = frozenset(matches)
+
+        return set(self.pattern_matches[pattern])
 
 
 class Filler(ABC):
@@ -508,17 +511,23 @@ class Filler(ABC):
     def fewest_matches(crossword, wordlist):
         """Finds the slot that has the fewest possible matches, this is probably the best next place to look."""
         fewest_matches_slot = None
-        fewest_matches = len(wordlist.words) + 1
+        fewest_matches_collection = None
+        fewest_matches_count = len(wordlist.words) + 1
 
         for slot in crossword.words:
             word = crossword.words[slot]
             if Crossword.is_word_filled(word):
                 continue
-            matches = len(wordlist.get_matches(word))
-            if matches < fewest_matches:
-                fewest_matches = matches
+            matches = wordlist.get_matches(word)
+            match_count = len(matches)
+            if match_count < fewest_matches_count:
+                fewest_matches_count = match_count
                 fewest_matches_slot = slot
-        return fewest_matches_slot, fewest_matches
+                fewest_matches_collection = matches
+        if fewest_matches_collection is None:
+            fewest_matches_collection = ()
+
+        return fewest_matches_slot, fewest_matches_collection
     
     @staticmethod
     def minlook(crossword, wordlist, slot, matches, k):
@@ -581,11 +590,14 @@ class DFSFiller(Filler):
 
         slot, num_matches = Filler.fewest_matches(crossword, wordlist)
 
+        # choose slot with fewest matches
+        num_matches = len(matches)
+    
+
+
         if num_matches == 0:
             return False
 
-        previous_word = crossword.words[slot]
-        matches = list(wordlist.get_matches(previous_word))
         shuffle(matches)
 
         for match in matches:
@@ -631,13 +643,18 @@ class DFSBackjumpFiller(Filler):
         if crossword.is_filled():
             return True, None
 
+
         slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+
+        # choose slot with fewest matches
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
+
 
         if num_matches == 0:
             return False, slot
-
-        previous_word = crossword.words[slot]
-        matches = list(wordlist.get_matches(previous_word))
+    
         shuffle(matches)
 
         for match in matches:
@@ -689,13 +706,18 @@ class MinlookFiller(Filler):
         if crossword.is_filled():
             return True
 
+
         slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+
+        # choose slot with fewest matches
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
+
 
         if num_matches == 0:
             return False
 
-        previous_word = crossword.words[slot]
-        matches = list(wordlist.get_matches(previous_word))
         shuffle(matches)
 
         while matches:
@@ -753,13 +775,18 @@ class MinlookBackjumpFiller(Filler):
         if crossword.is_filled():
             return True, None
 
+
         slot, num_matches = Filler.fewest_matches(crossword, wordlist)
+
+        # choose slot with fewest matches
+        slot, matches = Filler.fewest_matches(crossword, wordlist)
+
+        num_matches = len(matches)
+
 
         if num_matches == 0:
             return False, slot
 
-        previous_word = crossword.words[slot]
-        matches = list(wordlist.get_matches(previous_word))
         shuffle(matches)
 
         while matches:
