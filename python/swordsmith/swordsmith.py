@@ -110,29 +110,36 @@ class Crossword:
 
 
 class AmericanCrossword(Crossword):
-    def __init__(self, rows, cols):
+    def __init__(self, rows, cols, min_word_length: int = 3):
         super(AmericanCrossword, self).__init__()
 
         self.rows = rows
         self.cols = cols
+        self.min_word_length = max(1, min_word_length)
         self.grid = [[EMPTY for c in range(cols)] for r in range(rows)] # 2D array of squares
 
         self.__generate_slots_from_grid()
 
     @classmethod
-    def from_grid(cls, grid, all_checked=True):
+    def from_grid(cls, grid, min_word_length: int = 3, all_checked=False):
         """Generates AmericanCrossword from 2D array of characters"""
+        grid = [row for row in grid if len(row) > 0]
+        if not grid:
+            raise ValueError('Grid must contain at least one row')
+
         rows = len(grid)
         cols = len(grid[0])
+        if any(len(row) != cols for row in grid):
+            raise ValueError('All rows in the grid must have the same length')
 
         blocks = []
-        
+
         for r in range(rows):
             for c in range(cols):
                 if grid[r][c] == BLOCK:
                     blocks.append((r, c))
 
-        xw = cls(rows, cols)
+        xw = cls(rows, cols, min_word_length=min_word_length)
         if blocks:
             xw.put_blocks(blocks)
 
@@ -140,7 +147,7 @@ class AmericanCrossword(Crossword):
             for c in range(cols):
                 if grid[r][c] != BLOCK and grid[r][c] != EMPTY:
                     xw.grid[r][c] = grid[r][c]
-        
+
         xw.__generate_slots_from_grid(all_checked)
 
         return xw
@@ -192,14 +199,35 @@ class AmericanCrossword(Crossword):
     
     def put_block(self, row, col):
         """Places block in certain square"""
+        previous_value = self.grid[row][col]
         self.grid[row][col] = BLOCK
-        self.__generate_slots_from_grid()
-    
+        try:
+            self.__generate_slots_from_grid()
+        except ValueError as error:
+            self.grid[row][col] = previous_value
+            try:
+                self.__generate_slots_from_grid()
+            except ValueError:
+                self.clear()
+            raise error
+
     def put_blocks(self, coords):
         """Places list of blocks in specified squares"""
+        previous_values = {}
         for row, col in coords:
+            if (row, col) not in previous_values:
+                previous_values[(row, col)] = self.grid[row][col]
             self.grid[row][col] = BLOCK
-        self.__generate_slots_from_grid()
+        try:
+            self.__generate_slots_from_grid()
+        except ValueError as error:
+            for (row, col), value in previous_values.items():
+                self.grid[row][col] = value
+            try:
+                self.__generate_slots_from_grid()
+            except ValueError:
+                self.clear()
+            raise error
     
     def add_slot(self, squares, word):
         slot = tuple(squares)
@@ -213,7 +241,22 @@ class AmericanCrossword(Crossword):
         
         self.words[slot] = word
 
-    def __generate_slots_from_grid(self, all_checked=True):
+    def __generate_slots_from_grid(self, all_checked=False):
+        min_length = 1 if all_checked else self.min_word_length
+        min_length = max(1, min_length)
+
+        slots_to_add = []
+
+        def finalize_run(squares, word):
+            if not squares:
+                return
+            if len(squares) < min_length:
+                coords = ', '.join(f'({row}, {col})' for row, col in squares)
+                raise ValueError(
+                    f'Slot of length {len(squares)} shorter than minimum {min_length} encountered at {coords}'
+                )
+            slots_to_add.append((squares[:], word))
+
         self.clear()
 
         # generate across words
@@ -223,20 +266,13 @@ class AmericanCrossword(Crossword):
             for c in range(self.cols):
                 letter = self.grid[r][c]
                 if letter != BLOCK:
-                    # add a letter to the current word
                     word += letter
                     squares.append((r, c))
                 else:
-                    # block hit, check to see if there's a word in progress
-                    if word != '':
-                        if all_checked or len(squares) > 1:
-                            self.add_slot(squares, word)
-                        word = ''
-                        squares = []
-            # last word in row
-            if word != '':
-                if all_checked or len(squares) > 1:
-                    self.add_slot(squares, word)
+                    finalize_run(squares, word)
+                    word = ''
+                    squares = []
+            finalize_run(squares, word)
 
         # generate down words
         for c in range(self.cols):
@@ -245,21 +281,17 @@ class AmericanCrossword(Crossword):
             for r in range(self.rows):
                 letter = self.grid[r][c]
                 if letter != BLOCK:
-                    # add a letter to the current word
                     word += letter
                     squares.append((r, c))
                 else:
-                    # block hit, check to see if there's a word in progress
-                    if word != '':
-                        if all_checked or len(squares) > 1:
-                            self.add_slot(squares, word)
-                        word = ''
-                        squares = []
-            # last word in column
-            if word != '':
-                if all_checked or len(squares) > 1:
-                    self.add_slot(squares, word)
-        
+                    finalize_run(squares, word)
+                    word = ''
+                    squares = []
+            finalize_run(squares, word)
+
+        for squares, word in slots_to_add:
+            self.add_slot(squares, word)
+
         self.generate_crossings()
 
 
@@ -662,8 +694,8 @@ def read_grid(filepath):
         return f.read().splitlines()
 
 
-def iterate_wildcard_layouts(grid_lines):
-    """Yield wildcard-resolved grids that respect rotational symmetry and block limits."""
+def iterate_wildcard_layouts(grid_lines, min_word_length: int = 3):
+    """Yield wildcard-resolved grids that respect rotational symmetry, block limits, and slot lengths."""
     rows = len(grid_lines)
     if rows == 0:
         yield []
@@ -672,9 +704,44 @@ def iterate_wildcard_layouts(grid_lines):
     cols = len(grid_lines[0])
     base_grid = [list(row) for row in grid_lines]
 
+    def has_short_empty_run(grid):
+        minimum = max(1, min_word_length)
+        if minimum <= 1:
+            return False
+
+        # Check rows
+        for row in grid:
+            run = 0
+            for value in row:
+                if value == EMPTY:
+                    run += 1
+                else:
+                    if 0 < run < minimum:
+                        return True
+                    run = 0
+            if 0 < run < minimum:
+                return True
+
+        # Check columns
+        for col_index in range(cols):
+            run = 0
+            for row_index in range(rows):
+                value = grid[row_index][col_index]
+                if value == EMPTY:
+                    run += 1
+                else:
+                    if 0 < run < minimum:
+                        return True
+                    run = 0
+            if 0 < run < minimum:
+                return True
+
+        return False
+
     wildcard_coords = [(r, c) for r, row in enumerate(grid_lines) for c, value in enumerate(row) if value == '+']
     if not wildcard_coords:
-        yield [''.join(row) for row in base_grid]
+        if not has_short_empty_run(base_grid):
+            yield [''.join(row) for row in base_grid]
         return
 
     groups = []
@@ -718,6 +785,9 @@ def iterate_wildcard_layouts(grid_lines):
                     fill_value = BLOCK if index in selected else EMPTY
                     for group_row, group_col in group:
                         new_grid[group_row][group_col] = fill_value
+
+                if has_short_empty_run(new_grid):
+                    continue
 
                 yield [''.join(row) for row in new_grid]
 
@@ -773,8 +843,13 @@ def run_test(args):
 
         if wildcard_present:
             crossword = None
-            for candidate_grid in iterate_wildcard_layouts(grid):
-                candidate_crossword = AmericanCrossword.from_grid(candidate_grid)
+            for candidate_grid in iterate_wildcard_layouts(grid, min_word_length=args.min_word_length):
+                try:
+                    candidate_crossword = AmericanCrossword.from_grid(
+                        candidate_grid, min_word_length=args.min_word_length
+                    )
+                except ValueError:
+                    continue
                 filler = get_filler(args)
                 result = filler.fill(candidate_crossword, wordlist, args.animate)
                 is_filled = result[0] if isinstance(result, tuple) else result
@@ -784,7 +859,7 @@ def run_test(args):
             if crossword is None:
                 raise RuntimeError('Unable to fill crossword for any wildcard configuration.')
         else:
-            crossword = AmericanCrossword.from_grid(grid)
+            crossword = AmericanCrossword.from_grid(grid, min_word_length=args.min_word_length)
             filler = get_filler(args)
             filler.fill(crossword, wordlist, args.animate)
 
@@ -815,8 +890,10 @@ def main():
                         default='dfs', help='which algorithm to run: dfs, dfsb, minlook, mlb')
     parser.add_argument('-k', '--k', dest='k', type=int,
                         default=5, help='k constant for minlook')
+    parser.add_argument('--min-word-length', dest='min_word_length', type=int,
+                        default=3, help='minimum allowed slot length in the grid')
     args = parser.parse_args()
-    
+
     run_test(args)
 
 

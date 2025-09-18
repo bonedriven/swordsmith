@@ -20,12 +20,17 @@ Using any of these optional command line flags:
 | --k K | -k | k constant for minlook |
 | --strategy [dfs dfsb minlook mlb] | -s | which filling algorithm to run |
 | --animate | -a | whether to animate grid filling |
+| --min-word-length MIN_WORD_LENGTH | - | minimum allowed slot length (default: 3) |
 
 For example:
 
 ```
 python3 swordsmith -w spreadthewordlist.dict -g 7xopen.txt -a
 ```
+
+The engine now enforces a minimum slot length of three cells. Use `--min-word-length`
+to override the default, and note that grids violating the configured threshold will
+raise a `ValueError` during construction so you can correct issues immediately.
 
 ---
 
@@ -77,15 +82,18 @@ Represents a special case of the crossword that consists of a two-dimensional gr
 
 ### Fields
 - `rows`
-	- Number of rows in the grid
+        - Number of rows in the grid
 - `cols`
-	- Number of columns in the grid
+        - Number of columns in the grid
 - `grid`
-	- `rows` by `cols` array of characters representing the letters in each square of the grid
+        - `rows` by `cols` array of characters representing the letters in each square of the grid
+- `min_word_length`
+        - Minimum allowable length for any across or down slot (defaults to 3, never less than 1)
 
 ### Class Methods
-- `from_grid(cls, grid)`
-	- Generates a crossword from 2D array of characters
+- `from_grid(cls, grid, min_word_length=3, all_checked=False)`
+        - Generates a crossword from 2D array of characters and enforces the minimum slot length
+        - Raises `ValueError` when any across or down run is shorter than `min_word_length`
 
 ### Static Methods
 - `is_across_slot(slot)`
@@ -103,9 +111,10 @@ Represents a special case of the crossword that consists of a two-dimensional gr
 - `__generate_grid_from_slots(self)`
     - Processes `slots` to refresh the grid array
     - Called whenever the grid is about to be printed, in case the contents of the slots have changed
-- `__generate_slots_from_grid(self)`
-	- Processes `grid` array to generate the across and down slots
-	- Called whenever grid shape changes
+- `__generate_slots_from_grid(self, all_checked=False)`
+        - Processes `grid` array to generate the across and down slots
+        - When `all_checked` is `False`, raises `ValueError` if any slot is shorter than `min_word_length`
+        - Called whenever grid shape changes
 
 ---
 
