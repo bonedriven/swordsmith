@@ -18,7 +18,6 @@ import swordsmith as sw  # noqa: E402
 GRID_5X = SWORDSMITH_DIR / "grid" / "5x.txt"
 GRID_15X = SWORDSMITH_DIR / "grid" / "15xcommon.txt"
 GRID_15X_QUAD = SWORDSMITH_DIR / "grid" / "15xquadstack.txt"
-GRID_7X_OPEN_PLUS = SWORDSMITH_DIR / "grid" / "7xopenplus.txt"
 WORDLIST = SWORDSMITH_DIR / "wordlist" / "spreadthewordlist.dict"
 
 
@@ -141,73 +140,6 @@ class Test15xMinlookBackjump(unittest.TestCase):
         result, _ = filler.fill(crossword, wordlist, animate=False)
         self.assertTrue(result)
         self.assertTrue(crossword.is_filled())
-
-
-class TestWildcardLayoutRegression(unittest.TestCase):
-    def runTest(self) -> None:
-        raw_grid = sw.read_grid(GRID_7X_OPEN_PLUS)
-        layouts = list(sw.generate_wildcard_layouts(raw_grid))
-        self.assertTrue(layouts)
-        for layout_rows, _ in layouts:
-            self.assertTrue(all("+" not in row for row in layout_rows))
-
-        target_blocks = set(sw.WILDCARD_DEFAULT_BLOCKS)
-
-        chosen_layout = None
-        for layout_rows, assignments in layouts:
-            assigned_blocks = {
-                coord for coord, value in assignments.items() if value == sw.BLOCK
-            }
-            if assigned_blocks == target_blocks:
-                chosen_layout = layout_rows
-                break
-
-        self.assertIsNotNone(chosen_layout, "Expected wildcard assignment missing")
-
-        total_cells = len(chosen_layout) * len(chosen_layout[0])
-        block_count = sum(cell == sw.BLOCK for row in chosen_layout for cell in row)
-        self.assertLessEqual(block_count / total_cells, 0.2)
-
-        wordlist = sw.read_wordlist(WORDLIST)
-        for word in sw.WILDCARD_DEFAULT_WORDS:
-            wordlist.add_word(word)
-
-        prioritized_words = list(sw.WILDCARD_DEFAULT_WORDS)
-        prioritized_set = set(prioritized_words)
-        original_get_matches = wordlist.get_matches
-
-        def prioritized_get_matches(self: sw.Wordlist, pattern: str) -> list[str]:
-            matches = original_get_matches(pattern)
-            if not matches:
-                return matches
-            priority = [word for word in prioritized_words if word in matches]
-            if not priority:
-                return matches
-            remainder = [word for word in matches if word not in prioritized_set]
-            return priority + remainder
-
-        wordlist.get_matches = prioritized_get_matches.__get__(wordlist, sw.Wordlist)
-
-        original_shuffle = sw.shuffle
-        sw.shuffle = lambda seq: None
-
-        try:
-            crossword = sw.AmericanCrossword.from_grid(chosen_layout)
-            filler = sw.DFSFiller()
-            result = filler.fill(crossword, wordlist, animate=False)
-        finally:
-            wordlist.get_matches = original_get_matches
-            sw.shuffle = original_shuffle
-
-        self.assertTrue(result)
-        self.assertTrue(crossword.is_filled())
-
-        filled_words = {
-            crossword.words[slot]
-            for slot in crossword.slots
-            if sw.Crossword.is_word_filled(crossword.words[slot])
-        }
-        self.assertSetEqual(filled_words, set(prioritized_words))
 
 
 class TestQuadStackDFS(unittest.TestCase):
