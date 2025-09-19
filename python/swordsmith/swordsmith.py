@@ -26,8 +26,7 @@ class Crossword:
         self.wordset = set()                                        # set of filled words in puzzle
 
     def __str__(self):
-        return '
-'.join(', '.join(str(square) for square in slot) + ': ' + self.words[slot] for slot in self.slots)
+        return ''.join(', '.join(str(square) for square in slot) + ': ' + self.words[slot] for slot in self.slots)
 
     def clear(self):
         """Resets the crossword by clearing all fields"""
