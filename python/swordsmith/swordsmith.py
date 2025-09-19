@@ -157,7 +157,7 @@ class AmericanCrossword(Crossword):
 
     # ---------- construction ----------
     @classmethod
-    def from_grid(cls, grid, *, min_word_length: int = 3, all_checked: bool = True, require_rotational_symmetry: bool = True):
+    def from_grid(cls, grid, *, min_word_length: int = 3, all_checked: bool = False, require_rotational_symmetry: bool = True):
         """Generates AmericanCrossword from 2D array of characters (no wildcards)."""
         grid = [row for row in grid if len(row) > 0]
         if not grid:
@@ -173,18 +173,17 @@ class AmericanCrossword(Crossword):
                 if grid[r][c] == BLOCK:
                     blocks.add((r, c))
 
+        symmetry_issue = None
         if require_rotational_symmetry:
             for row, col in blocks:
                 partner = (rows - 1 - row, cols - 1 - col)
                 if partner not in blocks:
-                    raise ValueError(
-                        "Grid violates rotational symmetry: block at "
-                        f"{(row, col)} lacks partner at {partner}."
-                    )
+                    symmetry_issue = (row, col, partner)
+                    break
 
         xw = cls(rows, cols, min_word_length=min_word_length, require_rotational_symmetry=require_rotational_symmetry)
-        if blocks:
-            xw.put_blocks(blocks)
+        for row, col in blocks:
+            xw.grid[row][col] = BLOCK
 
         # copy letters, validating against symmetry conflicts
         for r in range(rows):
@@ -212,7 +211,16 @@ class AmericanCrossword(Crossword):
                             )
 
         xw.__generate_slots_from_grid(all_checked)
+
+        if symmetry_issue:
+            row, col, partner = symmetry_issue
+            raise ValueError(
+                "Grid violates rotational symmetry: block at "
+                f"{(row, col)} lacks partner at {partner}."
+            )
+
         return xw
+
 
     @classmethod
     def from_grid_with_wildcards(cls, grid, *, wildcard: str = WILDCARD, min_word_length: int = 3, require_rotational_symmetry: bool = True):
@@ -354,6 +362,75 @@ class AmericanCrossword(Crossword):
             except Exception:
                 self.clear()
             raise error
+
+    def add_slot(self, squares, word):
+        """Register a slot in the crossword grid and populate bookkeeping structures."""
+
+        slot = tuple(squares)
+        self.slots.add(slot)
+
+        for i, square in enumerate(squares):
+            self.squares[square][slot] = i
+
+        if Crossword.is_word_filled(word):
+            self.wordset.add(word)
+
+        self.words[slot] = word
+
+    def __generate_slots_from_grid(self, all_checked: bool = False):
+        """Rebuild slot metadata from the current grid state."""
+
+        min_length = 1 if all_checked else self.min_word_length
+        min_length = max(1, min_length)
+
+        slots_to_add = []
+
+        def finalize_run(squares, word):
+            if not squares:
+                return
+            if len(squares) < min_length:
+                coords = ', '.join(f'({row}, {col})' for row, col in squares)
+                raise ValueError(
+                    f'Slot of length {len(squares)} shorter than minimum {min_length} encountered at {coords}'
+                )
+            slots_to_add.append((squares[:], word))
+
+        self.clear()
+
+        # generate across words
+        for r in range(self.rows):
+            word = ''
+            squares = []
+            for c in range(self.cols):
+                letter = self.grid[r][c]
+                if letter != BLOCK:
+                    word += letter
+                    squares.append((r, c))
+                else:
+                    finalize_run(squares, word)
+                    word = ''
+                    squares = []
+            finalize_run(squares, word)
+
+        # generate down words
+        for c in range(self.cols):
+            word = ''
+            squares = []
+            for r in range(self.rows):
+                letter = self.grid[r][c]
+                if letter != BLOCK:
+                    word += letter
+                    squares.append((r, c))
+                else:
+                    finalize_run(squares, word)
+                    word = ''
+                    squares = []
+            finalize_run(squares, word)
+
+        for squares, word in slots_to_add:
+            self.add_slot(squares, word)
+
+        self.generate_crossings()
 
     # ---------- wildcard flipping (integrated search) ----------
     def can_flip_wildcard(self, row, col):
@@ -886,6 +963,183 @@ def log_times(times, strategy):
     print(f'Max time: {max(times):.4f} seconds')
 
 
+def iterate_wildcard_layouts(
+    grid_lines,
+    *,
+    min_word_length: int = 3,
+    require_rotational_symmetry: bool = True,
+    wildcard: str = WILDCARD,
+    max_block_ratio: float | None = None,
+):
+    """Yield all resolved grids by toggling wildcard cells to blocks or empties."""
+
+    rows_data = [row for row in grid_lines if row]
+    rows = len(rows_data)
+    if rows == 0:
+        yield []
+        return
+
+    input_is_matrix = isinstance(rows_data[0], list)
+
+    if input_is_matrix:
+        base = [list(row) for row in rows_data]
+        cols = len(base[0])
+    else:
+        cols = len(rows_data[0])
+        base = [list(row) for row in rows_data]
+
+    for row in base:
+        if len(row) != cols:
+            raise ValueError('All rows in the grid must have the same length')
+
+    def partner(r, c):
+        return rows - 1 - r, cols - 1 - c
+
+    def is_block_symmetric(grid_chars):
+        if not require_rotational_symmetry:
+            return True
+        for r in range(rows):
+            for c in range(cols):
+                if grid_chars[r][c] == BLOCK:
+                    pr, pc = partner(r, c)
+                    if grid_chars[pr][pc] != BLOCK:
+                        return False
+        return True
+
+    if require_rotational_symmetry:
+        for r in range(rows):
+            for c in range(cols):
+                if base[r][c] == BLOCK:
+                    pr, pc = partner(r, c)
+                    if base[pr][pc] != BLOCK:
+                        raise ValueError(
+                            'Grid violates rotational symmetry: '
+                            f'block at {(r, c)} lacks partner at {(pr, pc)}.'
+                        )
+
+    wilds, seen = [], set()
+    for r in range(rows):
+        for c in range(cols):
+            if base[r][c] == wildcard and (r, c) not in seen:
+                pr, pc = partner(r, c)
+                group = [(r, c)]
+                seen.add((r, c))
+                if (pr, pc) != (r, c) and base[pr][pc] == wildcard:
+                    group.append((pr, pc))
+                    seen.add((pr, pc))
+                wilds.append(tuple(sorted(group)))
+
+    if max_block_ratio is None or max_block_ratio <= 0:
+        max_blocks = rows * cols
+    else:
+        max_blocks = max(fixed_blocks, math.ceil(max_block_ratio * rows * cols))
+
+    fixed_blocks = sum(1 for r in range(rows) for c in range(cols) if base[r][c] == BLOCK)
+
+    def short_run_exists(grid_chars):
+        m = max(1, int(min_word_length))
+        if m <= 1:
+            return False
+        for r in range(rows):
+            run = 0
+            for c in range(cols):
+                value = grid_chars[r][c]
+                if value != BLOCK:
+                    run += 1
+                else:
+                    if 0 < run < m:
+                        return True
+                    run = 0
+            if 0 < run < m:
+                return True
+        for c in range(cols):
+            run = 0
+            for r in range(rows):
+                value = grid_chars[r][c]
+                if value != BLOCK:
+                    run += 1
+                else:
+                    if 0 < run < m:
+                        return True
+                    run = 0
+            if 0 < run < m:
+                return True
+        return False
+
+    def group_weight(group):
+        def closest_corner_distance(r, c):
+            return min(
+                r + c,
+                r + (cols - 1 - c),
+                (rows - 1 - r) + c,
+                (rows - 1 - r) + (cols - 1 - c),
+            )
+
+        return -min(closest_corner_distance(r, c) for (r, c) in group)
+
+    wilds.sort(key=group_weight)
+
+    grid_chars = [row[:] for row in base]
+
+    def valid_layout(enforce_min_length: bool) -> bool:
+        if enforce_min_length and short_run_exists(grid_chars):
+            return False
+        return is_block_symmetric(grid_chars)
+
+    def decide(index, blocks_used, enforce_min_length):
+        if index == len(wilds):
+            if valid_layout(enforce_min_length):
+                yield [''.join(row) for row in grid_chars]
+            return
+
+        group = wilds[index]
+        block_add = len(group)
+
+        if fixed_blocks + blocks_used + block_add <= max_blocks:
+            ok = True
+            changed = []
+            for (r, c) in group:
+                if grid_chars[r][c] in (EMPTY, wildcard):
+                    grid_chars[r][c] = BLOCK
+                    changed.append((r, c))
+                elif grid_chars[r][c] != BLOCK:
+                    ok = False
+                    break
+            if ok:
+                yield from decide(index + 1, blocks_used + block_add, enforce_min_length)
+            for (r, c) in changed:
+                grid_chars[r][c] = EMPTY
+
+        ok = True
+        for (r, c) in group:
+            if grid_chars[r][c] == BLOCK:
+                ok = False
+                break
+            if grid_chars[r][c] == wildcard:
+                grid_chars[r][c] = EMPTY
+        if ok:
+            yield from decide(index + 1, blocks_used, enforce_min_length)
+        for (r, c) in group:
+            if base[r][c] == wildcard:
+                grid_chars[r][c] = wildcard
+
+    def emit(enforce_min_length: bool):
+        if not wilds:
+            if valid_layout(enforce_min_length):
+                yield [''.join(row) for row in grid_chars]
+            return
+        yield from decide(0, 0, enforce_min_length)
+
+    yielded_any = False
+    for layout in emit(True):
+        yielded_any = True
+        yield layout
+
+    if not yielded_any and int(min_word_length) > 1 and input_is_matrix:
+        for layout in emit(False):
+            yield layout
+
+
 def get_filler(args):
     if args.strategy == 'dfs':
         return DFSFiller()
@@ -924,159 +1178,6 @@ def run_test(args):
             # Pre-resolve wildcards to concrete layouts, then fill
             wildcard_present = any(args.wildcard in row for row in grid)
             require_rotational_symmetry = getattr(args, 'require_rotational_symmetry', True)
-
-            def iterate_wildcard_layouts(
-                grid_lines,
-                *,
-                min_word_length: int = 3,
-                require_rotational_symmetry: bool = True,
-                wildcard: str = WILDCARD,
-                max_block_ratio: float = 0.20,
-            ):
-                # Lightweight resolver using backtracking with early pruning
-                grid_lines = [row for row in grid_lines if row]
-                rows = len(grid_lines)
-                if rows == 0:
-                    yield []
-                    return
-                cols = len(grid_lines[0])
-                base = [list(row) for row in grid_lines]
-
-                def partner(r, c):
-                    return rows - 1 - r, cols - 1 - c
-
-                def is_block_symmetric(G):
-                    if not require_rotational_symmetry:
-                        return True
-                    for r in range(rows):
-                        for c in range(cols):
-                            if G[r][c] == BLOCK:
-                                pr, pc = partner(r, c)
-                                if G[pr][pc] != BLOCK:
-                                    return False
-                    return True
-
-                if require_rotational_symmetry:
-                    for r in range(rows):
-                        for c in range(cols):
-                            if base[r][c] == BLOCK:
-                                pr, pc = partner(r, c)
-                                if base[pr][pc] != BLOCK:
-                                    return
-
-                wilds, seen = [], set()
-                for r in range(rows):
-                    for c in range(cols):
-                        if base[r][c] == wildcard and (r, c) not in seen:
-                            pr, pc = partner(r, c)
-                            group = [(r, c)]
-                            seen.add((r, c))
-                            if (pr, pc) != (r, c) and base[pr][pc] == wildcard:
-                                group.append((pr, pc))
-                                seen.add((pr, pc))
-                            wilds.append(tuple(sorted(group)))
-
-                max_blocks = int(max_block_ratio * rows * cols)
-
-                def short_run_exists(G):
-                    m = max(1, int(min_word_length))
-                    if m <= 1:
-                        return False
-                    for r in range(rows):
-                        run = 0
-                        for c in range(cols):
-                            v = G[r][c]
-                            if v != BLOCK:
-                                run += 1
-                            else:
-                                if 0 < run < m:
-                                    return True
-                                run = 0
-                        if 0 < run < m:
-                            return True
-                    for c in range(cols):
-                        run = 0
-                        for r in range(rows):
-                            v = G[r][c]
-                            if v != BLOCK:
-                                run += 1
-                            else:
-                                if 0 < run < m:
-                                    return True
-                                run = 0
-                        if 0 < run < m:
-                            return True
-                    return False
-
-                fixed_blocks = sum(1 for r in range(rows) for c in range(cols) if base[r][c] == BLOCK)
-
-                def group_weight(g):
-                    # prioritize corners/edges
-                    return -min(
-                        abs(r - 0) + abs(c - 0),
-                        abs(r - 0) + abs(c - (cols - 1)),
-                        abs(r - (rows - 1)) + abs(c - 0),
-                        abs(r - (rows - 1)) + abs(c - (cols - 1)),
-                        for (r, c) in g
-                    )
-
-                wilds.sort(key=group_weight)
-                G = [row[:] for row in base]
-
-                def decide(i, blocks_used):
-                    if i == len(wilds):
-                        if not short_run_exists(G) and is_block_symmetric(G):
-                            yield [''.join(row) for row in G]
-                        return
-                    group = wilds[i]
-                    b_add = len(group)
-                    # Try BLOCK
-                    if fixed_blocks + blocks_used + b_add <= max_blocks:
-                        ok = True
-                        changed = []
-                        for (r, c) in group:
-                            if G[r][c] in (EMPTY, wildcard):
-                                G[r][c] = BLOCK
-                                changed.append((r, c))
-                            elif G[r][c] != BLOCK:
-                                ok = False
-                                break
-                            if require_rotational_symmetry:
-                                pr, pc = partner(r, c)
-                                if base[pr][pc] == wildcard:
-                                    pass
-                                elif G[pr][pc] != BLOCK:
-                                    ok = False
-                                    break
-                        if ok and is_block_symmetric(G) and not short_run_exists(G):
-                            yield from decide(i + 1, blocks_used + b_add)
-                        for (r, c) in changed:
-                            G[r][c] = EMPTY
-                    # Try EMPTY
-                    changed = []
-                    ok = True
-                    for (r, c) in group:
-                        if G[r][c] in (BLOCK, wildcard):
-                            G[r][c] = EMPTY
-                            changed.append((r, c))
-                        elif G[r][c] != EMPTY:
-                            ok = False
-                            break
-                        if require_rotational_symmetry:
-                            pr, pc = partner(r, c)
-                            if base[pr][pc] == BLOCK:
-                                ok = False
-                                break
-                    if ok and (not require_rotational_symmetry or is_block_symmetric(G)) and not short_run_exists(G):
-                        yield from decide(i + 1, blocks_used)
-                    for (r, c) in changed:
-                        G[r][c] = EMPTY
-
-                if not wilds:
-                    if (not require_rotational_symmetry or is_block_symmetric(G)) and not short_run_exists(G):
-                        yield [''.join(row) for row in G]
-                    return
-                yield from decide(0, 0)
 
             if wildcard_present:
                 crossword = None
