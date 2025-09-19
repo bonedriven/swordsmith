@@ -313,8 +313,7 @@ class AmericanCrossword(Crossword):
 
     def __str__(self):
         self.__generate_grid_from_slots()
-        return '
-'.join(' '.join([letter for letter in row]) for row in self.grid)
+        return ''.join(' '.join([letter for letter in row]) for row in self.grid)
 
     # ---------- block placement (fixed) ----------
     def put_block(self, row, col):
