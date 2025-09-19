@@ -1132,9 +1132,7 @@ def run_test(args):
         if not args.animate:
             print(crossword)
 
-        print(f'
-Filled {crossword.cols}x{crossword.rows} crossword in {duration:.4f} seconds
-')
+        print(f'Filled {crossword.cols}x{crossword.rows} crossword in {duration:.4f} seconds')
 
     log_times(times, args.strategy)
 
